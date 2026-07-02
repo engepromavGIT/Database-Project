@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vite/
+
+# Documentos de cliente (PDFs assinados) — ficam só locais
+orcamentos/
+
+__pycache__/
+*.pyc
+.claude/settings.local.json
