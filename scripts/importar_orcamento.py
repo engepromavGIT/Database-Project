@@ -365,8 +365,9 @@ def commit(obra, etapas, itens, anexos, force=False):
             data_base = f"{y}-{mn}-{d}"
 
         obra_id = gid("obra")
-        # Template B (sem custo unitário por item): não entra no pool de referências de estimativa.
-        elegivel = obra.get("template", "A") == "A"
+        # Orçamentos importados entram como referência de estimativa. A paramétrica usa o
+        # custo/m² da OBRA (não o custo por item), então o Template B também é elegível.
+        elegivel = True
         cur.execute(
             """INSERT INTO orcamento.obras
                  (id,codigo,nome,cliente_id,tipo_obra_id,localidade_id,area_construida_m2,
