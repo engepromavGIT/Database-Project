@@ -242,3 +242,33 @@ Acervo completo: 5602 (372,80/m²) · 6219 (415,30/m²) · 6220 (106,87/m²) · 
 > testada só neste PDF; (3) anexos > 25 MB não vão para o banco (ANEXO_MAX_MB) — se quiserem o projeto
 > básico anexado, precisa de outra estratégia (compressão, storage externo, ou upload direto sem pooler).
 > Obs.: a mensagem final do commit conta anexos da lista, não os efetivamente gravados (cosmético).
+
+---
+
+## Atualização 2026-07-03 — verificação da estimativa paramétrica (+ fix no /api/analogas)
+
+Rodado `node scripts/verificar_estimativa.mjs` contra a API viva (branch dev, 4 obras).
+
+### Bug encontrado e corrigido — `server/index.js` (query CAND do calcularAnalogas)
+Na 1ª execução o `/api/analogas` retornou **0 análogas**. Causa: a query usava
+`COALESCE(o.custo_real_total, o.custo_orcado_total)`, mas `custo_real_total` é `0.00`
+(DEFAULT 0), **não NULL** — o COALESCE devolvia 0 e o `> 0` do WHERE descartava as 4 obras.
+Mesma armadilha que a migration 008 corrigiu na view. **Fix aplicado (SELECT e WHERE):**
+`COALESCE(NULLIF(o.custo_real_total, 0), o.custo_orcado_total)`.
+
+### Resultado (todas as conferências ✅)
+```
+Análogas: 5602 (372,80/m², sim 60%) · 6219 (415,30/m², sim 58%)
+          6239 (110,31/m², sim 10%) · 6220 (106,87/m², sim 10%)
+Só praças (2): custo/m² 393,81 · provável 590.835,99 (565.575 — 616.575)
+               preço c/ BDI 25% 738.544,99 · confiança Baixa (31%)
+Conferência:   custo/m² ✅ (esp ~394) · provável ✅ (esp ~590.835)
+               confiança ✅ (esp ~31%) · rótulo Baixa ✅
+```
+
+### Para o Cowork
+> A estimativa paramétrica está validada de ponta a ponta com o acervo real: ranking correto
+> (praças ≫ pavimentações), números batendo com o esperado do script. O fix do NULLIF na query
+> CAND é essencial — sem ele nenhuma obra importada de orçamento (realizado = 0) entra como
+> análoga. Vale varrer o código por outros `COALESCE(custo_real_total, ...)` com o mesmo problema
+> (aderenciaHistorica e prazoHistorico já filtram por `> 0`/IS NOT NULL, esses estão OK).

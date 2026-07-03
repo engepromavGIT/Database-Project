@@ -98,7 +98,7 @@ const CAND = `
   SELECT o.id, o.codigo, o.nome,
          o.tipo_obra_id AS "tipoObraId", o.padrao_id AS "padraoId", o.localidade_id AS "localidadeId",
          o.area_construida_m2 AS "areaConstruidaM2",
-         COALESCE(o.custo_real_total, o.custo_orcado_total) AS "custoRealTotal",
+         COALESCE(NULLIF(o.custo_real_total, 0), o.custo_orcado_total) AS "custoRealTotal",
          to_char(o.data_base_custo, 'YYYY-MM') AS "dataBaseCusto",
          (o.dt_fim_real - o.dt_inicio_real) AS "prazoRealDias",
          loc.uf AS uf, loc.fator_regional AS "fatorRegional",
@@ -107,7 +107,7 @@ const CAND = `
   LEFT JOIN orcamento.localidades loc ON loc.id = o.localidade_id
   LEFT JOIN orcamento.padroes_acabamento pad ON pad.id = o.padrao_id
   WHERE o.elegivel_referencia = true AND o.area_construida_m2 > 0
-        AND COALESCE(o.custo_real_total, o.custo_orcado_total) > 0`
+        AND COALESCE(NULLIF(o.custo_real_total, 0), o.custo_orcado_total) > 0`
 
 async function calcularAnalogas(alvo) {
   const serie = await serieIndice(alvo.indice || 'SINAPI')
