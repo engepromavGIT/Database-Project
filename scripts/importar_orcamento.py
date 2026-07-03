@@ -55,6 +55,13 @@ HDR = {"ITEM", "CÓDIGO", "DESCRIÇÃO", "FONTE", "UNIDADE", "QTD",
 # Código de EAP válido: "1", "3.2", "10.1.4" (só dígitos e pontos).
 # Linhas de rodapé/resumo (ex.: "VALOR BDI TOTAL: R$ ...") não casam e são ignoradas.
 EAP_RE = re.compile(r"^\d+(\.\d+)*$")
+# Item de planilha: EAP com pelo menos um ponto (2.1, 6.4, 4.1.1). Distingue itens
+# da planilha sintética dos insumos das composições unitárias ("00011267", "93681")
+# e de cabeçalhos mesclados ("4.1. C3179 ESC…"), que não casam.
+DOT_EAP = re.compile(r"^\d+(\.\d+)+$")
+# Etapa de EAP: segmentos curtos (macro 1–99, subs). Códigos longos de insumo
+# ("93681", "00011267") não casam e ficam de fora também do ramo de etapas.
+ETAPA_RE = re.compile(r"^\d{1,2}(\.\d{1,3})*$")
 
 def parse_planilha(path):
     etapas, itens = [], []
@@ -71,17 +78,31 @@ def parse_planilha(path):
                 if set(c[:10]) <= HDR:
                     continue
                 qtd = num(c[5])
-                if qtd is not None and (c[3] or c[4]):  # item: tem qtd + fonte/unidade
+                if qtd is not None and (c[3] or c[4]) and DOT_EAP.match(it):  # item: qtd + fonte/unidade + EAP pontuada
                     itens.append(dict(item=it, codigo=c[1], descricao=c[2], fonte=c[3],
                                       unidade=c[4], qtd=qtd, vu_sem=num(c[6]), vu_com=num(c[8])))
-                elif EAP_RE.match(it):  # etapa (macro/sub): código EAP no campo ITEM, nome no CÓDIGO
+                elif ETAPA_RE.match(it) and qtd is None:  # etapa (macro/sub): EAP curta, sem qtd na linha
                     etapas.append(dict(item=it, nome=(c[1] or c[2]).strip(), total=num(c[9])))
-                # demais linhas (rodapés/totais como "VALOR BDI TOTAL: ...") são ignoradas
+                # demais linhas (rodapés, totais, insumos de composição) são ignoradas
     return etapas, itens
 
 def parse_resumo(path):
+    # O RESUMO costuma estar na pág. 1 (arquivos separados), mas em PDF único
+    # (projeto básico) fica numa página interna. Varre até achar a página que tem
+    # os totais completos (VALOR ORÇAMENTO + VALOR BDI TOTAL) e usa só ela — evita
+    # pegar a ocorrência parcial/arredondada de outra página. Se nenhuma página
+    # tiver os dois, usa o texto acumulado.
     with pdfplumber.open(path) as pdf:
-        txt = pdf.pages[0].extract_text() or ""
+        acum = []
+        txt = None
+        for pg in pdf.pages:
+            t = pg.extract_text() or ""
+            if "VALOR ORÇAMENTO" in t and "VALOR BDI TOTAL" in t:
+                txt = t
+                break
+            acum.append(t)
+        if txt is None:
+            txt = "\n".join(acum)
     def g(p, d=None):
         m = re.search(p, txt)
         return m.group(1).strip() if m else d
@@ -198,10 +219,17 @@ def parse_memorial(path):
     if not path:
         return dict(area=None, objeto=None)
     with pdfplumber.open(path) as pdf:
-        txt = "\n".join((p.extract_text() or "") for p in pdf.pages[:6])
-    m = re.search(r"área(?:\s+total|\s+de intervenç[ãa]o|\s+constru[íi]da)?\s*(?:de\s*)?([\d.]*\d,\d+)\s*m[²2]",
-                  txt, re.IGNORECASE)
-    area = num(m.group(1)) if m else area_vias(path)   # pavimentação: soma o Quadro Resumo das Vias
+        txt = "\n".join((p.extract_text() or "") for p in pdf.pages[:12])
+    area = None
+    # "por unidade × quantidade" (projeto básico de N praças): ÁREA … 270,36 m² por unidade × 07 praças
+    mu = re.search(r"([\d.]*\d,\d+)\s*m[²2]\s*por\s*unidade", txt, re.IGNORECASE)
+    mq = re.search(r"QUANTIDADE\s+DE\s+PRA[ÇC]AS\s*:?\s*0*(\d+)", txt, re.IGNORECASE)
+    if mu and mq:
+        area = round(num(mu.group(1)) * int(mq.group(1)), 2)
+    if area is None:
+        m = re.search(r"área(?:\s+total|\s+de intervenç[ãa]o|\s+constru[íi]da)?\s*(?:de\s*)?([\d.]*\d,\d+)\s*m[²2]",
+                      txt, re.IGNORECASE)
+        area = num(m.group(1)) if m else area_vias(path)   # pavimentação: soma o Quadro Resumo das Vias
     if area is None:
         m2 = re.search(r"([\d.]*\d,\d+)\s*m[²2]", txt)
         area = num(m2.group(1)) if m2 else None
@@ -227,7 +255,7 @@ def inferir_tipo(texto):
         return "Residencial"
     return "Infraestrutura"  # drenagem, saneamento, adutora, etc.
 
-def montar(pasta):
+def montar(pasta, area_override=None):
     EXC = ["MEMORIAL", "COMPARATIV"]
     mem = achar(pasta, ["MEMORIAL"])
     # Planilha de itens (nomes variam: PLANILHA ORÇAMENTÁRIA, P.SERVIÇOS, PLANILHA DE SERVIÇOS...).
@@ -236,14 +264,27 @@ def montar(pasta):
     # Resumo/consolidado (CONSOLIDADO/RESUMO; senão um "ORÇAMENTO" que não seja a planilha/comparativo).
     res = (achar(pasta, ["CONSOLIDADO", "RESUMO"], excluir=EXC)
            or achar(pasta, ["ORÇAMENT", "ORCAMENT"], excluir=EXC + ["P.SERVI", "P. SERVI", "PLANILHA", "SERVI"]))
+    # Template C: projeto básico em PDF único (memorial + planilha + composições no mesmo arquivo).
+    unico = None
+    if not plan:
+        pdfs = sorted(glob.glob(os.path.join(pasta, "*.pdf")))
+        cand = achar(pasta, ["PROJ.BASICO", "PROJ. BASICO", "PROJETO BASICO", "BASICO", "BÁSICO"])
+        if len(pdfs) == 1:
+            unico = pdfs[0]
+        elif cand:
+            unico = cand
+        elif pdfs:
+            unico = max(pdfs, key=os.path.getsize)  # o projeto básico costuma ser o maior arquivo
+        if unico:
+            plan = res = mem = unico
     if not plan:
         sys.exit("Não achei a planilha de itens (PLANILHA / P.SERVIÇOS) nesta pasta.")
     etapas, itens = parse_planilha(plan)
     h = parse_resumo(res) if res else parse_resumo(plan)  # sem resumo: usa o cabeçalho da própria planilha
     m = parse_memorial(mem)
 
-    if [i for i in itens if i.get("vu_sem")]:             # Template A: planilha orçamentária com preços por item
-        template, fonte = "A", "orcamento_pdf"
+    if [i for i in itens if i.get("vu_sem")]:             # planilha orçamentária com preços por item
+        template, fonte = ("C", "orcamento_pdf_unico") if unico else ("A", "orcamento_pdf")
         if not h.get("valor_orcamento") and itens:        # sem total no resumo: soma dos itens (sem BDI)
             h["valor_orcamento"] = round(sum((i["qtd"] or 0) * (i["vu_sem"] or 0) for i in itens), 2)
         if h.get("valor_orcamento") and h.get("bdi") and not h.get("valor_total"):
@@ -278,14 +319,18 @@ def montar(pasta):
 
     nome = re.sub(r"\s+", " ", (h.get("obra") or os.path.basename(pasta))).strip()
     codigo = f"MAPP-{h['mapp']}" if h.get("mapp") else os.path.basename(pasta).split("_")[0]
+    area = area_override if area_override else m.get("area")
     obra = dict(codigo=codigo, nome=nome, cliente=h.get("contratante"),
                 municipio=h.get("municipio"), uf=h.get("uf"),
                 tipo=inferir_tipo((m.get("objeto") or "") + " " + nome),
-                area=m.get("area"), custo_orcado=h.get("valor_orcamento"),
+                area=area, custo_orcado=h.get("valor_orcamento"),
                 custo_com_bdi=h.get("valor_total"), bdi=h.get("bdi"),
                 data_base=h.get("data"), objeto=m.get("objeto"),
                 template=template, fonte=fonte)
-    anexos = [p for p in (plan, res, mem) if p]
+    anexos = []
+    for p in (plan, res, mem):        # PDF único entra uma vez só
+        if p and p not in anexos:
+            anexos.append(p)
     return obra, etapas, itens, anexos
 
 # ---------------- dry-run ----------------
@@ -437,9 +482,11 @@ def main():
     ap.add_argument("pasta", help="Pasta do projeto (com os PDFs).")
     ap.add_argument("--commit", action="store_true", help="Grava no banco (sem isso é dry-run).")
     ap.add_argument("--force", action="store_true", help="Recarrega (apaga e regrava) se a obra já existir.")
+    ap.add_argument("--area", type=float, default=None,
+                    help="Área total em m² (sobrepõe a extração automática; use p/ casos 'por unidade × quantidade').")
     a = ap.parse_args()
     pasta = a.pasta if os.path.isabs(a.pasta) else os.path.join(RAIZ, a.pasta)
-    obra, etapas, itens, anexos = montar(pasta)
+    obra, etapas, itens, anexos = montar(pasta, area_override=a.area)
     mostrar(obra, etapas, itens)
     if a.commit:
         commit(obra, etapas, itens, anexos, force=a.force)

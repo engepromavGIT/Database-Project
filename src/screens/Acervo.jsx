@@ -121,14 +121,14 @@ export function Acervo() {
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
-                <th>Código</th><th>Nome</th><th>Tipo</th><th>Área</th><th>Custo real</th><th>Ref.</th><th></th>
+                <th>Código</th><th>Nome</th><th>Tipo</th><th>Área</th><th>Custo</th><th>Ref.</th><th></th>
               </tr></thead>
               <tbody>
                 {obras.map((o) => (
                   <tr key={o.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td>{o.codigo}</td><td>{o.nome}</td><td>{o.tipoObra || '—'}</td>
                     <td>{o.areaConstruidaM2 ? `${o.areaConstruidaM2} m²` : '—'}</td>
-                    <td>{brl(o.custoRealTotal)}</td>
+                    <td>{brl(o.custoRealTotal || o.custoOrcadoTotal)}</td>
                     <td>{o.elegivelReferencia ? '✓' : '—'}</td>
                     <td><button className="btn btn-ghost btn-sm" onClick={() => setSel(o)}>Detalhar</button></td>
                   </tr>

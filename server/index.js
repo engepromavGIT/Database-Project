@@ -26,7 +26,9 @@ const origins = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim()).f
 app.use(cors({ origin: origins.includes('*') ? true : origins }))
 app.use(express.json({ limit: '10mb' }))
 
-const PORT = process.env.PORT || 3001
+// API_PORT tem precedência: PORT genérico pode ser injetado por ferramentas de
+// preview/hospedagem no processo inteiro (e o Vite já ocupa essa porta em dev).
+const PORT = process.env.API_PORT || process.env.PORT || 3001
 
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   console.warn('[base-projetos] AVISO: JWT_SECRET não definido em produção.')
