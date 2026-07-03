@@ -62,11 +62,25 @@ DOT_EAP = re.compile(r"^\d+(\.\d+)+$")
 # Etapa de EAP: segmentos curtos (macro 1–99, subs). Códigos longos de insumo
 # ("93681", "00011267") não casam e ficam de fora também do ramo de etapas.
 ETAPA_RE = re.compile(r"^\d{1,2}(\.\d{1,3})*$")
+# Linha de item no TEXTO da página (recuperação de linhas que o extract_table engole
+# na quebra de página): EAP pontuada, código, descrição, fonte, unid, qtd e 4 valores.
+ITEM_TXT_RE = re.compile(
+    r"^(\d+(?:\.\d+)+)\s+(\S+)\s+(.+?)\s+(\S+)\s+(\S+)\s+([\d.,]+)\s+"
+    r"R\$\s?([\d.,]+)\s+R\$\s?([\d.,]+)\s+R\$\s?([\d.,]+)\s+R\$\s?([\d.,]+)\s*$")
 
 def parse_planilha(path):
     etapas, itens = [], []
+    textos = []
+    ultima_pg_util = -1
     with pdfplumber.open(path) as pdf:
-        for pg in pdf.pages:
+        for pi, pg in enumerate(pdf.pages):
+            # Parada antecipada (PDF único/projeto básico): a planilha fica num bloco
+            # contíguo; depois vêm memórias/composições — que não rendem linhas e podem
+            # ter páginas patologicamente lentas no extract_table (minutos por página).
+            if itens and ultima_pg_util >= 0 and pi - ultima_pg_util > 25:
+                break
+            antes = len(itens) + len(etapas)
+            textos.append(pg.extract_text() or "")
             tbl = pg.extract_table()
             if not tbl:
                 continue
@@ -81,9 +95,49 @@ def parse_planilha(path):
                 if qtd is not None and (c[3] or c[4]) and DOT_EAP.match(it):  # item: qtd + fonte/unidade + EAP pontuada
                     itens.append(dict(item=it, codigo=c[1], descricao=c[2], fonte=c[3],
                                       unidade=c[4], qtd=qtd, vu_sem=num(c[6]), vu_com=num(c[8])))
-                elif ETAPA_RE.match(it) and qtd is None:  # etapa (macro/sub): EAP curta, sem qtd na linha
-                    etapas.append(dict(item=it, nome=(c[1] or c[2]).strip(), total=num(c[9])))
+                elif qtd is not None and (c[3] or c[4]) and ETAPA_RE.match(it):
+                    # item-macro sem sub-itens (projeto básico): "1 ADMINISTRAÇÃO … 100,00 % R$368,22".
+                    # Vira etapa própria + item dentro dela (o subtotal da etapa vem dos itens).
+                    etapas.append(dict(item=it, nome=(c[2] or c[1]).strip(), total=None))
+                    itens.append(dict(item=it + ".0", codigo=c[1], descricao=c[2], fonte=c[3],
+                                      unidade=c[4], qtd=qtd, vu_sem=num(c[6]), vu_com=num(c[8])))
+                elif ETAPA_RE.match(it) and (qtd is None or (qtd == 1.0 and not (c[3] or c[4]))):
+                    # etapa (macro/sub): sem qtd (template Praça) ou "1,00 × total" sem
+                    # fonte/unidade (projeto básico, total em c[6] em vez de c[9])
+                    total = num(c[9]) if num(c[9]) is not None else num(c[6])
+                    etapas.append(dict(item=it, nome=(c[1] or c[2]).strip(), total=total))
                 # demais linhas (rodapés, totais, insumos de composição) são ignoradas
+            if len(itens) + len(etapas) > antes:
+                ultima_pg_util = pi
+
+    # Recuperação por texto: na quebra de página o extract_table às vezes engole uma
+    # linha (ex.: item na 1ª linha da página). Se a linha existe no texto e o código
+    # ainda não foi capturado, resgata pelo padrão de item.
+    if itens:
+        vistos = {i["item"] for i in itens}
+        for t in textos:
+            for ln in t.splitlines():
+                mt = ITEM_TXT_RE.match(ln.strip())
+                if mt and mt.group(1) not in vistos and ETAPA_RE.match(mt.group(1)):
+                    itens.append(dict(item=mt.group(1), codigo=mt.group(2), descricao=mt.group(3),
+                                      fonte=mt.group(4), unidade=mt.group(5), qtd=num(mt.group(6)),
+                                      vu_sem=num(mt.group(7)), vu_com=num(mt.group(9))))
+                    vistos.add(mt.group(1))
+        # Pais órfãos: etapa cujo código sumiu na extração (célula ITEM vazia) é
+        # sintetizada a partir do prefixo dos itens; nome vem do texto se possível.
+        presentes = {e["item"] for e in etapas}
+        for i in itens:
+            pref = i["item"].split(".")[0]
+            if pref not in presentes:
+                nome = None
+                for t in textos:
+                    mm = re.search(rf"^{pref}\s+([A-ZÀ-Ú][A-ZÀ-Ú0-9 \-/().,]+?)(?:\s+1,00|\s+R\$|\s*$)",
+                                   t, re.MULTILINE)
+                    if mm:
+                        nome = mm.group(1).strip()
+                        break
+                etapas.append(dict(item=pref, nome=nome or f"ETAPA {pref}", total=None))
+                presentes.add(pref)
     return etapas, itens
 
 def parse_resumo(path):
@@ -95,7 +149,7 @@ def parse_resumo(path):
     with pdfplumber.open(path) as pdf:
         acum = []
         txt = None
-        for pg in pdf.pages:
+        for pg in pdf.pages[:40]:   # o resumo nunca fica no fim; evita páginas lentas do PDF único
             t = pg.extract_text() or ""
             if "VALOR ORÇAMENTO" in t and "VALOR BDI TOTAL" in t:
                 txt = t
@@ -190,7 +244,7 @@ def area_vias(path):
     os subtotais por localidade (Nº = 'N.0')."""
     try:
         with pdfplumber.open(path) as pdf:
-            for pg in pdf.pages:
+            for pg in pdf.pages[:30]:   # o quadro de vias fica no início do memorial; evita páginas lentas
                 for tbl in (pg.extract_tables() or []):
                     linhas = [[(c or "").replace("\n", " ").strip() for c in row] for row in (tbl or [])]
                     flat = " ".join(c for row in linhas for c in row).upper()
@@ -461,7 +515,15 @@ def commit(obra, etapas, itens, anexos, force=False):
                 cur.execute("UPDATE orcamento.etapas SET custo_orcado=%s WHERE id=%s",
                             (e["total"], emap[e["item"]]))
 
+        # Anexos muito grandes derrubam a conexão do pooler do Neon (BYTEA gigante).
+        # Limite configurável: ANEXO_MAX_MB (default 25). Acima disso, o PDF fica só local.
+        max_mb = float(os.environ.get("ANEXO_MAX_MB", "25"))
         for path in anexos:
+            tam = os.path.getsize(path)
+            if tam > max_mb * 1024 * 1024:
+                print(f"AVISO: anexo {os.path.basename(path)} ({tam // (1024*1024)} MB) excede "
+                      f"{max_mb:.0f} MB — não será gravado no banco (fica só local).")
+                continue
             with open(path, "rb") as fh:
                 data = fh.read()
             cur.execute("INSERT INTO orcamento.anexos (id,obra_id,filename,mime_type,size_bytes,data) VALUES (%s,%s,%s,%s,%s,%s)",
@@ -469,8 +531,11 @@ def commit(obra, etapas, itens, anexos, force=False):
 
         conn.commit()
         print(f"OK — obra {obra['codigo']} gravada (id {obra_id}): {len(etapas)} etapas, {n_it} itens, {len(anexos)} anexos.")
-    except Exception as e:
-        conn.rollback()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass   # conexão pode já ter caído; não mascarar o erro original
         raise
     finally:
         cur.close()

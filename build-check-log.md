@@ -183,3 +183,62 @@ Regressão do Template A (5602) verificada: inalterado (15+28 etapas, 98 itens, 
 > **não-elegíveis a referência** (sem custo unitário por item), então não enviesam a estimativa paramétrica —
 > se vocês quiserem que participem por macro-etapa/custo-m², dá pra revisar essa flag. Vale um teste do motor
 > com um 3º orçamento de layout novo para confirmar a robustez.
+
+---
+
+## Atualização 2026-07-03 — Template C (PDF único / projeto básico) implementado e MAPP-6219 importado
+
+Implementados os 4 ajustes do handoff `TEMPLATE_C.md` em `scripts/importar_orcamento.py`,
+validados com o dry-run das 07 Praças e gravados na branch dev.
+
+### Os 4 ajustes do handoff
+1. **Detecção de PDF único** em `montar()` — sem planilha separada, usa o PDF `PROJ.BASICO`/único/maior
+   como planilha+resumo+memorial; `template='C'`, `fonte_dado='orcamento_pdf_unico'`.
+2. **Filtro de item** — `DOT_EAP` (EAP pontuada) para itens; insumos de composição (`00011267`, `93681`)
+   e cabeçalhos mesclados descartados. Adicional: `ETAPA_RE` (segmentos 1–2 dígitos) também no ramo de
+   etapas, senão os insumos viravam etapas falsas.
+3. **`parse_resumo` multi-página** — varre até a página com VALOR ORÇAMENTO + VALOR BDI TOTAL juntos
+   (pega a íntegra, não a arredondada); arquivos separados seguem lendo a pág. 1.
+4. **`--area` override + auto** — flag no argparse; auto detecta "X m² por unidade × QUANTIDADE DE
+   PRAÇAS N" (achou 270,36 × 7 = 1.892,52 sozinho, sem precisar da flag).
+
+### Problemas encontrados nos testes (além do handoff) e correções
+- **Travamento**: as págs. 71–80 do PDF (piso tátil) levam ~6 min no `extract_table` — era isso que
+  "pendurava" o dry-run. Fix: **parada antecipada** no `parse_planilha` (25 págs. sem linha útil → break)
+  + caps de página no `parse_resumo` (40) e `area_vias` (30).
+- **Linhas híbridas** deste template: etapas com `qtd=1,00` e total em c[6] (não c[9]); macros 1–2
+  (ADMINISTRAÇÃO, PLACAS) são itens sem ponto. Fix: classificação estendida (item-macro vira etapa+item).
+- **Linhas engolidas na quebra de página** pelo extract_table: item 6.3 (R$ 16.945,53) e o código da
+  etapa 12. Fix: **recuperação por texto** (regex de linha de item) + síntese de pais órfãos
+  (etapa 12 = IMPERMEABILIZAÇÕES, nome resgatado do texto).
+- **Anexo de 38 MB derruba a conexão** do pooler do Neon no INSERT (BYTEA) — o 1º `--commit` falhou com
+  rollback limpo. Fix: limite `ANEXO_MAX_MB` (default 25) — acima disso o PDF fica só local, com aviso;
+  e o `rollback()` do handler não mascara mais o erro original.
+
+### Validação (dry-run) vs valores do handoff
+| Check | Esperado | Obtido |
+|---|---|---|
+| VALOR ORÇAMENTO | 785.959,25 | ✅ soma itens 785.959,34 (dif +0,09) |
+| VALOR TOTAL | 970.001,70 | ✅ |
+| BDI | 23,42% | ✅ |
+| Área | 1.892,52 m² | ✅ automática |
+| Custo/m² | ≈ 415 | ✅ 415,30 |
+| Sem insumos | — | ✅ 40 itens, todos da planilha |
+| Regressões | — | ✅ A: 98 itens/dif −0,01 · B: dif −9,00 |
+
+### Gravado na branch dev (conferido via SQL)
+```
+MAPP-6219 | área 1.892,52 | s/BDI 785.959,25 | BDI 23,42% | c/BDI 970.001,70
+etapas 20 | itens 40 | anexos 0 (PDF de 38 MB > limite, fica local) | elegível: sim
+fonte_dado: orcamento_pdf_unico | soma itens no banco: 785.959,34 ✓
+Acervo completo: 5602 (372,80/m²) · 6219 (415,30/m²) · 6220 (106,87/m²) · 6239 (110,31/m²)
+```
+
+### Para o Cowork
+> Template C implementado e as 07 Praças estão no banco — 4 obras no acervo agora. Três achados que
+> valem revisão de vocês: (1) a parada antecipada do parse_planilha assume planilha em bloco contíguo
+> (25 págs. sem linha útil → para; se algum orçamento tiver planilha espalhada, ajustar); (2) a
+> recuperação por texto resgata linhas que o extract_table engole na quebra de página — genérica, mas
+> testada só neste PDF; (3) anexos > 25 MB não vão para o banco (ANEXO_MAX_MB) — se quiserem o projeto
+> básico anexado, precisa de outra estratégia (compressão, storage externo, ou upload direto sem pooler).
+> Obs.: a mensagem final do commit conta anexos da lista, não os efetivamente gravados (cosmético).
