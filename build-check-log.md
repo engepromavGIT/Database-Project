@@ -305,3 +305,34 @@ storage), migrations 006–008 na branch dev, contagem de anexos no ETL (cosmét
 > ao documento e o pipeline offline reproduziu o resultado de vocês (check OK · 79/79 ·
 > build 25 módulos). Esta máquina não tinha Node; instalei o LTS (v24.18.0) via winget,
 > então as próximas verificações locais rodam direto. Nenhum follow-up foi iniciado.
+
+---
+
+## Atualização 2026-07-08 — UI de anexos no ObraDetalhe (follow-up nº 1 do handoff)
+
+Implementado o primeiro follow-up do handoff: os endpoints de leitura de anexos agora
+têm interface.
+
+- **`src/data/api.js`**: `obraAnexos(obraId)` (GET `/obras/:id/anexos`) e
+  `anexoUrl(anexoId)` — monta a URL de download com `?token=` (o token do módulo),
+  para uso direto em `<a href>`.
+- **`src/screens/ObraDetalhe.jsx`**: seção **"Anexos"** abaixo da Curva ABC —
+  tabela Arquivo / Tamanho / Data / Baixar, com truncamento do nome (title completo
+  no hover), tamanho formatado (KB/MB, vírgula pt-BR via `fmtBytes`) e estado vazio
+  "Sem anexos.". Carrega junto com a obra (`useEffect` por `obra.id`).
+
+| Verificação | Resultado | Observações |
+|-------------|-----------|-------------|
+| npm run check | ✅ | 11 arquivos OK |
+| npm test | ✅ | 79 passou, 0 falhou |
+| npm run build | ✅ | 25 módulos, 447ms |
+| UI ao vivo (stub) | ✅ | Sem `.env` nesta máquina → verifiquei com stub da API na :3001 imitando o formato do `pg` (numerics como string). Lista renderiza (3 PDFs, "2,4 MB"/"11,0 MB"/"340 KB"), links `/api/anexos/:id?token=…`, download 200 com `Content-Disposition` e `%PDF`, sem token → 401, obra sem anexos → "Sem anexos.", console limpo. |
+
+### Para o Cowork
+> UI de anexos pronta e ligada nos 2 endpoints novos. Não testei contra o Neon (sem
+> `.env` aqui) — vale um smoke test de vocês nas obras 5602/6239/6220 (3 anexos cada).
+> Detalhe de design: o link "Baixar" embute o token na URL (`api.anexoUrl`), então um
+> link copiado vale por até 7 dias (expiração do JWT) — aceitável para uso interno,
+> mas se quiserem endurecer, dá para trocar por download via fetch+blob como no
+> `estimativaPdf`. Follow-ups restantes do handoff: anexos > 25 MB, migrations 006–008,
+> contagem de anexos no ETL e "Custo real" no Comparar.

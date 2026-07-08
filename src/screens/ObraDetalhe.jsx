@@ -22,11 +22,17 @@ const cmpEap = (a, b) => {
 }
 const profEap = (cod) => (cod || '').split('.').length - 1
 const corta = (s, n) => { const t = s || ''; return t.length > n ? `${t.slice(0, n)}…` : t }
+const fmtBytes = (b) => {
+  const n = Number(b)
+  if (!(n > 0)) return '—'
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
+}
 
 export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [etapas, setEtapas] = useState([])
   const [servicos, setServicos] = useState([])
   const [abc, setAbc] = useState([])
+  const [anexos, setAnexos] = useState([])
   const [sel, setSel] = useState(null)
   const [itens, setItens] = useState([])
   const [realizados, setRealizados] = useState([])
@@ -47,7 +53,11 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
     const [i, r] = await Promise.all([api.etapaItens(etapaId), api.etapaRealizados(etapaId)])
     setItens(i); setRealizados(r)
   }
-  useEffect(() => { api.servicos().then(setServicos).catch(() => {}); recarregar() }, [obra.id])
+  useEffect(() => {
+    api.servicos().then(setServicos).catch(() => {})
+    api.obraAnexos(obra.id).then(setAnexos).catch(() => setAnexos([]))
+    recarregar()
+  }, [obra.id])
   useEffect(() => { recarregarEtapa(sel).catch((e) => setErro(e.message)) }, [sel])
 
   const acao = async (fn) => { setErro(null); try { await fn() } catch (e) { setErro(e.message) } }
@@ -134,6 +144,24 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
             </tbody>
           </table>
           </div>
+
+          {/* Anexos (RF-B06 / US-18) — download via ?token= (ver api.anexoUrl) */}
+          <strong style={{ fontSize: 13, display: 'block', marginTop: 'var(--sp-4)' }}>Anexos</strong>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 6 }}>
+            <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+              <th>Arquivo</th><th>Tamanho</th><th>Data</th><th></th>
+            </tr></thead>
+            <tbody>
+              {anexos.map((a) => (
+                <tr key={a.id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td title={a.filename || ''}>{corta(a.filename || '—', 42)}</td>
+                  <td>{fmtBytes(a.sizeBytes)}</td><td>{a.createdAt || '—'}</td>
+                  <td><a className="btn btn-ghost btn-sm" href={api.anexoUrl(a.id)}>Baixar</a></td>
+                </tr>
+              ))}
+              {anexos.length === 0 && <tr><td colSpan="4" className="empty">Sem anexos.</td></tr>}
+            </tbody>
+          </table>
         </div>
       </div>
 

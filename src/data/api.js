@@ -76,6 +76,11 @@ export const api = {
   delRealizado: (id) => req('DELETE', `/realizados/${id}`),
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
 
+  // ----- anexos (RF-B06 / US-18) -----
+  obraAnexos: (obraId) => req('GET', `/obras/${obraId}/anexos`),
+  // URL de download direto (<a href>); o requireAuth do servidor aceita ?token=.
+  anexoUrl: (anexoId) => `${BASE}/anexos/${anexoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`,
+
   // ----- comparação (RF-E03) -----
   comparar: (obraIds) => req('POST', '/comparar', { obraIds }),
 
