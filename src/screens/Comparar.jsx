@@ -24,7 +24,8 @@ export function Comparar() {
     ['Padrão', (o) => o.padrao || '—'],
     ['Área (m²)', (o) => (o.areaConstruidaM2 != null ? num(o.areaConstruidaM2, 2) : '—')],
     ['Custo orçado', (o) => brl(o.custoOrcadoTotal)],
-    ['Custo real', (o) => brl(o.custoRealTotal)],
+    // Obras importadas de orçamento têm realizado "0.00" (DEFAULT, não NULL) — mostra "—".
+    ['Custo real', (o) => (Number(o.custoRealTotal) > 0 ? brl(o.custoRealTotal) : '—')],
     ['Custo/m²', (o) => brl(o.custoM2Real)],
     ['Desvio de custo', (o) => desvioPct(o.fatorDesvioCusto)],
     ['Prazo real (dias)', (o) => (o.prazoRealDias ?? '—')],

@@ -374,3 +374,22 @@ psycopg2-binary 2.9.12 via `pip install -r scripts/requirements.txt`.
 > branch dev tiver IP allowlist ou o host direto não for alcançável, o script avisa e a
 > obra grava normalmente sem o anexo. Se preferirem object storage no futuro, o
 > particionamento já isola o ponto de decisão num lugar só.
+
+---
+
+## Atualização 2026-07-08 — "Custo real" no Comparar (último follow-up cosmético)
+
+`src/screens/Comparar.jsx`: a linha "Custo real" usava `brl(custoRealTotal)` direto —
+`brl` só devolve "—" para `null`, e obras importadas têm realizado `"0.00"` (string,
+DEFAULT 0), então mostrava "R$ 0,00". Agora: `Number(custoRealTotal) > 0 ? brl(...) : '—'`
+(mesmo tratamento do Acervo).
+
+| Verificação | Resultado | Observações |
+|-------------|-----------|-------------|
+| npm run build | ✅ | 25 módulos, 418ms |
+| UI ao vivo (stub) | ✅ | Comparativo com 2 obras: importada (realizado "0.00") → "Custo real: —"; obra manual → "R$ 123.456,78". Demais linhas inalteradas; console limpo. |
+
+### Para o Cowork
+> Fechou a lista de follow-ups do handoff de 08/07, exceto as **migrations 006–008 na
+> branch dev** — essas precisam do `.env`, que não existe nesta máquina; rodem
+> `npm run migrate` + F5 no ambiente de vocês.
