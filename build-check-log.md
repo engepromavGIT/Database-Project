@@ -272,3 +272,36 @@ Conferência:   custo/m² ✅ (esp ~394) · provável ✅ (esp ~590.835)
 > CAND é essencial — sem ele nenhuma obra importada de orçamento (realizado = 0) entra como
 > análoga. Vale varrer o código por outros `COALESCE(custo_real_total, ...)` com o mesmo problema
 > (aderenciaHistorica e prazoHistorico já filtram por `> 0`/IS NOT NULL, esses estão OK).
+
+---
+
+## Atualização 2026-07-08 — verificação do handoff Acervo + anexos (Cowork → Claude Code)
+
+Verificadas e commitadas as duas mudanças do `HANDOFF_2026-07-08_acervo-anexos.md`:
+fallback de custo no `Acervo.jsx` (obras importadas mostravam R$ 0,00 porque o `pg`
+devolve `numeric` como string e `"0.00"` é truthy) e os 2 endpoints de leitura de
+anexos em `obraDetalhe.js` (`GET /api/obras/:id/anexos` e `GET /api/anexos/:id`).
+
+**Ambiente:** Node v24.18.0 / npm 11.16.0 — instalados nesta máquina via
+`winget install OpenJS.NodeJS.LTS` (a máquina não tinha Node; a verificação de 29/06
+foi feita em outro ambiente).
+
+| Comando | Resultado | Observações |
+|---------|-----------|-------------|
+| git diff vs handoff | ✅ | Diffs no working tree batem exatamente com o descrito |
+| npm install | ✅ | 213 pacotes auditados; **0 vulnerabilidades** |
+| npm run check | ✅ | sintaxe OK nos 11 arquivos (inclui obraDetalhe.js) |
+| npm test | ✅ | **Total: 79 passou, 0 falhou** (22+10+29+6+5+7) |
+| npm run build | ✅ | vite v8.1.0; 25 módulos em 365ms (inclui Acervo.jsx) |
+| .git/config.lock | ✅ | resíduo removido conforme o handoff |
+
+Verificação live (banco) não executada nesta rodada. Follow-ups do handoff continuam
+pendentes: UI de anexos no `ObraDetalhe.jsx`, anexos > 25 MB (conexão direta ou object
+storage), migrations 006–008 na branch dev, contagem de anexos no ETL (cosmético) e
+"Custo real" das importadas no `Comparar.jsx`.
+
+### Para o Cowork
+> Handoff de 08/07 verificado e commitado sem alterações — os diffs estavam idênticos
+> ao documento e o pipeline offline reproduziu o resultado de vocês (check OK · 79/79 ·
+> build 25 módulos). Esta máquina não tinha Node; instalei o LTS (v24.18.0) via winget,
+> então as próximas verificações locais rodam direto. Nenhum follow-up foi iniciado.

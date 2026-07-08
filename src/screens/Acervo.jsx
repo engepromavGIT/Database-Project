@@ -128,7 +128,7 @@ export function Acervo() {
                   <tr key={o.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td>{o.codigo}</td><td>{o.nome}</td><td>{o.tipoObra || '—'}</td>
                     <td>{o.areaConstruidaM2 ? `${o.areaConstruidaM2} m²` : '—'}</td>
-                    <td>{brl(o.custoRealTotal || o.custoOrcadoTotal)}</td>
+                    <td>{brl(Number(o.custoRealTotal) > 0 ? o.custoRealTotal : o.custoOrcadoTotal)}</td>
                     <td>{o.elegivelReferencia ? '✓' : '—'}</td>
                     <td><button className="btn btn-ghost btn-sm" onClick={() => setSel(o)}>Detalhar</button></td>
                   </tr>

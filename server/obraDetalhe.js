@@ -120,4 +120,26 @@ export function registrarObraDetalhe(app) {
        WHERE e.obra_id = $1`, [req.params.id])
     res.json(curvaABC(itens.map((i) => ({ id: i.id, descricao: i.descricao, custoTotal: Number(i.custoTotal) }))))
   }))
+
+  // ----- Anexos da obra (RF-B06 / US-18): caminho de LEITURA -----
+  // Lista os metadados dos anexos de uma obra (sem trazer o binário).
+  app.get('/api/obras/:id/anexos', requireAuth, wrap(async (req, res) => {
+    res.json(await q(
+      `SELECT id, filename, mime_type AS "mimeType", size_bytes AS "sizeBytes",
+              to_char(created_at, 'YYYY-MM-DD') AS "createdAt"
+       FROM orcamento.anexos WHERE obra_id = $1 ORDER BY created_at`, [req.params.id]))
+  }))
+
+  // Baixa o binário de um anexo. O requireAuth aceita ?token= (ver auth.js),
+  // então funciona por <a href="/api/anexos/ID?token=...">. O bytea volta como Buffer.
+  app.get('/api/anexos/:id', requireAuth, wrap(async (req, res) => {
+    const [a] = await q(
+      'SELECT filename, mime_type AS "mimeType", data FROM orcamento.anexos WHERE id = $1',
+      [req.params.id])
+    if (!a) return res.status(404).json({ error: 'Anexo não encontrado.' })
+    const nome = (a.filename || 'anexo').replace(/["\r\n]/g, '')
+    res.setHeader('Content-Type', a.mimeType || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${nome}"`)
+    res.send(a.data)
+  }))
 }
