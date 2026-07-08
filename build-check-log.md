@@ -393,3 +393,34 @@ DEFAULT 0), então mostrava "R$ 0,00". Agora: `Number(custoRealTotal) > 0 ? brl(
 > Fechou a lista de follow-ups do handoff de 08/07, exceto as **migrations 006–008 na
 > branch dev** — essas precisam do `.env`, que não existe nesta máquina; rodem
 > `npm run migrate` + F5 no ambiente de vocês.
+
+---
+
+## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
+
+O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a
+`DATABASE_URL` fornecida apontava para `ep-little-wave-af44c09o-pooler` — que uma sonda
+somente-leitura confirmou ser a **PRODUÇÃO** do app Promav (só schema `public` com
+users/projects/tasks; sem `orcamento`). O `npm run migrate` teria criado o schema inteiro
+lá. Corrigido o host para a branch dev `ep-restless-dawn-af2pfvm7-pooler` (mesmas
+credenciais — branches do Neon herdam as roles), confirmada pela sonda (schema
+`orcamento` com 19 objetos + as 4 obras) antes de qualquer escrita.
+
+| Etapa | Resultado | Observações |
+|-------|-----------|-------------|
+| Sonda somente-leitura (host original) | ⚠️ | ep-little-wave = produção (sem schema `orcamento`) — migração ABORTADA |
+| Sonda somente-leitura (host dev) | ✅ | `orcamento` 19 objetos, 4 obras, colunas da 005 presentes |
+| npm run migrate | ✅ | 001→008 OK (idempotentes); 19 tabelas/views |
+| Verificação 006 | ✅ | 5602/6219 → **Urbanização**, 6220/6239 → **Pavimentação** |
+| Verificação 007 | ✅ | 6220/6239 (`orcamento_pdf_macro`) agora `elegivel_referencia = true` |
+| Verificação 008 | ✅ | `custo_m2_real` pelo orçado: 372,80 · 415,30 · 106,87 · 110,31; `fator_desvio_custo` NULL (sem realizado) |
+
+### Para o Cowork
+> Migrations 006–008 aplicadas e verificadas na branch dev — **todos os follow-ups do
+> handoff de 08/07 estão fechados**. Dois avisos: (1) a connection string que circulou
+> aqui era a de **produção**; o `.env` local foi corrigido para a dev
+> (`ep-restless-dawn-af2pfvm7`) com um comentário de alerta — vale conferir de onde essa
+> URL foi copiada para não voltar a acontecer; (2) o `JWT_SECRET` do `.env` local está
+> preenchido com um fragmento da senha do banco — funciona para login isolado, mas não é
+> o segredo do app Promav (logins não são compatíveis) e reutiliza credencial do banco;
+> recomendo trocar pelo segredo real do app ou por um aleatório forte.
