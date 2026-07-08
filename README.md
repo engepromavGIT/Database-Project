@@ -100,6 +100,11 @@ Templates suportados (detecção automática):
 > A pasta `orcamentos/` (PDFs assinados de clientes) **não é versionada** — os documentos
 > ficam locais e são anexados ao banco no `--commit`.
 
+> **Anexos grandes:** até 25 MB (`ANEXO_POOLER_MAX_MB`) o PDF entra na transação normal;
+> acima disso é gravado por **conexão direta** do Neon (host sem `-pooler`, que derruba
+> INSERT de BYTEA grande), após o commit da obra. Acima de 100 MB (`ANEXO_MAX_MB`) o PDF
+> fica só local.
+
 ---
 
 ## Banco de dados

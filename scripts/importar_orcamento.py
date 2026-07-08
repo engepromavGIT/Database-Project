@@ -424,6 +424,14 @@ def ler_database_url():
                 return line.split("=", 1)[1].strip()
     return None
 
+def url_direta(url):
+    """Conexão DIRETA do Neon: mesmo endpoint sem o sufixo '-pooler' no host.
+    Devolve None se a URL já não passa pelo pooler (aí não há limite de BYTEA)."""
+    m = re.match(r"^([^@]*@)([^/?]+)(.*)$", url)
+    if not m or "-pooler" not in m.group(2):
+        return None
+    return m.group(1) + m.group(2).replace("-pooler", "", 1) + m.group(3)
+
 def commit(obra, etapas, itens, anexos, force=False):
     import psycopg2
     url = ler_database_url()
@@ -515,22 +523,55 @@ def commit(obra, etapas, itens, anexos, force=False):
                 cur.execute("UPDATE orcamento.etapas SET custo_orcado=%s WHERE id=%s",
                             (e["total"], emap[e["item"]]))
 
-        # Anexos muito grandes derrubam a conexão do pooler do Neon (BYTEA gigante).
-        # Limite configurável: ANEXO_MAX_MB (default 25). Acima disso, o PDF fica só local.
-        max_mb = float(os.environ.get("ANEXO_MAX_MB", "25"))
+        # Anexos: o pooler do Neon derruba INSERT de BYTEA grande. Até ANEXO_POOLER_MAX_MB
+        # (default 25) o anexo entra na transação normal; acima disso vai por conexão
+        # DIRETA (host sem '-pooler'), depois do commit da obra. ANEXO_MAX_MB (default 100)
+        # é o teto absoluto — acima disso o PDF fica só local.
+        max_mb = float(os.environ.get("ANEXO_MAX_MB", "100"))
+        pooler_mb = float(os.environ.get("ANEXO_POOLER_MAX_MB", "25"))
+        direta = url_direta(url)   # None → a URL já é direta; não há limite do pooler
+        pequenos, grandes = [], []
         for path in anexos:
-            tam = os.path.getsize(path)
-            if tam > max_mb * 1024 * 1024:
-                print(f"AVISO: anexo {os.path.basename(path)} ({tam // (1024*1024)} MB) excede "
-                      f"{max_mb:.0f} MB — não será gravado no banco (fica só local).")
-                continue
+            mb = os.path.getsize(path) / (1024 * 1024)
+            if mb > max_mb:
+                print(f"AVISO: anexo {os.path.basename(path)} ({mb:.0f} MB) excede "
+                      f"{max_mb:.0f} MB (ANEXO_MAX_MB) — não será gravado no banco (fica só local).")
+            elif mb > pooler_mb and direta:
+                grandes.append(path)
+            else:
+                pequenos.append(path)
+
+        def inserir_anexo(c, path):
             with open(path, "rb") as fh:
                 data = fh.read()
-            cur.execute("INSERT INTO orcamento.anexos (id,obra_id,filename,mime_type,size_bytes,data) VALUES (%s,%s,%s,%s,%s,%s)",
-                        (gid("anx"), obra_id, os.path.basename(path), "application/pdf", len(data), psycopg2.Binary(data)))
+            c.execute("INSERT INTO orcamento.anexos (id,obra_id,filename,mime_type,size_bytes,data) VALUES (%s,%s,%s,%s,%s,%s)",
+                      (gid("anx"), obra_id, os.path.basename(path), "application/pdf", len(data), psycopg2.Binary(data)))
+
+        for path in pequenos:
+            inserir_anexo(cur, path)
 
         conn.commit()
-        print(f"OK — obra {obra['codigo']} gravada (id {obra_id}): {len(etapas)} etapas, {n_it} itens, {len(anexos)} anexos.")
+        n_anx = len(pequenos)
+
+        # Os grandes vão um a um, cada um na própria transação direta; a obra já está
+        # gravada, então uma falha aqui não desfaz nada — o PDF fica de fora, com aviso.
+        for path in grandes:
+            mb = os.path.getsize(path) // (1024 * 1024)
+            try:
+                cd = psycopg2.connect(direta)
+                try:
+                    with cd, cd.cursor() as curd:
+                        inserir_anexo(curd, path)
+                finally:
+                    cd.close()
+                n_anx += 1
+                print(f"anexo {os.path.basename(path)} ({mb} MB) gravado por conexão direta (sem pooler).")
+            except Exception as e:
+                print(f"AVISO: falha ao gravar {os.path.basename(path)} ({mb} MB) pela conexão direta "
+                      f"({e}) — fica só local.")
+
+        print(f"OK — obra {obra['codigo']} gravada (id {obra_id}): {len(etapas)} etapas, {n_it} itens, "
+              f"{n_anx} de {len(anexos)} anexos.")
     except Exception:
         try:
             conn.rollback()

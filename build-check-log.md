@@ -336,3 +336,41 @@ têm interface.
 > mas se quiserem endurecer, dá para trocar por download via fetch+blob como no
 > `estimativaPdf`. Follow-ups restantes do handoff: anexos > 25 MB, migrations 006–008,
 > contagem de anexos no ETL e "Custo real" no Comparar.
+
+---
+
+## Atualização 2026-07-08 — anexos grandes (>25 MB) por conexão direta (follow-up nº 2)
+
+Implementada no ETL (`scripts/importar_orcamento.py`) a recomendação do handoff:
+anexos grandes agora vão por **conexão direta** do Neon (host sem `-pooler`), que
+não tem o limite de BYTEA do pooler.
+
+- **`url_direta(url)`**: deriva a URL direta removendo `-pooler` do host (só no host —
+  senha com "-pooler" não é tocada); devolve `None` se a URL já é direta.
+- **Particionamento**: até `ANEXO_POOLER_MAX_MB` (default **25**) o anexo entra na
+  transação normal, como antes; entre 25 e `ANEXO_MAX_MB` (default **100**) vai por
+  conexão direta, **um por transação, após o commit da obra** (falha ali não desfaz a
+  obra — o PDF fica de fora, com aviso); acima de 100 MB fica só local. Se a
+  `DATABASE_URL` já for direta, não há limite do pooler e tudo ≤ 100 MB entra na
+  transação normal.
+- **Cosmético resolvido de carona**: a mensagem final agora conta os anexos
+  efetivamente gravados ("N de M anexos") em vez do tamanho da lista.
+- Documentação: variáveis novas no `.env.example` e nota no README (seção ETL).
+
+**Ambiente:** Python 3.13.14 instalado nesta máquina via winget (não havia Python;
+o registro de 30/06 com Python 3.14.5 era de outro ambiente) + pdfplumber 0.11.10 e
+psycopg2-binary 2.9.12 via `pip install -r scripts/requirements.txt`.
+
+| Verificação | Resultado | Observações |
+|-------------|-----------|-------------|
+| python -m py_compile | ✅ | sintaxe OK |
+| unit url_direta | ✅ | 6/6 casos (pooler→direta, já direta→None, host:porta, senha com "-pooler", localhost) |
+| teste com PDF real | ⏳ | sem pasta `orcamentos/` nem `.env` nesta máquina — pendente no ambiente com os PDFs |
+
+### Para o Cowork
+> Anexos grandes implementados por conexão direta (opção 1 da recomendação de vocês).
+> Falta o teste real: rodem `--commit --force` no 07 Praças (MAPP-6219) — o PDF de 38 MB
+> deve entrar agora pela conexão direta ("anexo … gravado por conexão direta"). Se a
+> branch dev tiver IP allowlist ou o host direto não for alcançável, o script avisa e a
+> obra grava normalmente sem o anexo. Se preferirem object storage no futuro, o
+> particionamento já isola o ponto de decisão num lugar só.
