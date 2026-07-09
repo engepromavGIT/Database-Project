@@ -662,3 +662,48 @@ usuário.
 > nada deixa rastro) e as **histórias Essenciais ainda abertas** (CRUD de clientes, busca de
 > obras, edição de obra, export CSV, atualização monetária). Recomendo priorizar RBAC+auditoria
 > antes de expor mais a API.
+
+---
+
+# 📋 RESUMO DA SESSÃO — 2026-07-09
+
+> As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta
+> é a visão consolidada da sessão, para o Cowork acompanhar o estado.
+
+Começou verificando o handoff de 08/07 (Acervo + anexos) e, com ele fechado, rodou uma
+**auditoria de pendências** (workflow multi-agente: 4 lentes → verificação adversarial →
+síntese) que confirmou **32 pendências** em 4 direções. O usuário escolheu as frentes e
+elas foram implementadas uma a uma. **11 commits**, todos verificados.
+
+### Commits (base `9d5c080`)
+| Commit | Entrega |
+|--------|---------|
+| `ac990cf` | Handoff 08/07: fallback de custo no Acervo + endpoints de leitura de anexos |
+| `e0b0f43` | UI de anexos no ObraDetalhe (US-18) |
+| `c8cebc5` | ETL: anexos grandes (25–100 MB) por conexão direta do Neon |
+| `c3a1920` | Comparar: "Custo real" mostra "—" para importadas |
+| `fa04c4d` | Migrations 006–008 aplicadas e verificadas na branch dev |
+| `3bc94c0` | Higiene/segurança: remove dumps com dados de cliente; corrige 500 no download (nome não-ASCII); guard fatal do JWT_SECRET |
+| `43f377a` | **RBAC + trilha de auditoria** (papel por request, `GET /api/auditoria` admin, log de ações) |
+| `852235d` | **Cobertura de testes**: auth, anexos, ETL (79 → 97 testes JS + 11 pytest) |
+| `bd88862` | **CRUD de clientes + edição/exclusão de obra** |
+| `f71d0c4` | Migration 009: `UNIQUE(obras.codigo)` |
+| `d71ca6d` | **Edição inline** de etapa/item/realizado (PUT + UI) |
+
+### Estado ao fim da sessão
+- **Ambiente local:** Node v24.18.0 e Python 3.13.14 instalados via winget (a máquina não tinha nenhum). `.env` da branch dev criado — **corrigido de produção → dev** (`ep-restless-dawn-af2pfvm7`); a connection string que circulou era a de prod.
+- **Banco dev:** migrations **001→009** aplicadas; schema `orcamento` com índice único de código, RBAC e trilha de auditoria funcionando.
+- **Testes:** `npm test` = **97** casos (sem banco) · `npm run test:py` = **11** (pytest do ETL, novo).
+- **RBAC:** admin-only = **consulta de auditoria** + **exclusão de obra inteira**; todo o resto (criar/editar/excluir linhas, estimar, importar) aberto a autenticados. Infra (`requireAdmin`, papel por request) pronta para gatear o CRUD de cadastros de referência quando existir.
+
+### Processo (o que deu certo)
+Cada frente grande seguiu: implementação → **verificação live** no servidor real (`:3010`, tokens mintados, dados de teste sempre limpos) → **revisão adversarial por workflow** antes do commit. Os reviews pegaram e corrigiram bugs/regressões reais que os testes não pegavam: exclusão de linha admin-only travando a correção do dia-a-dia; excluir obra referenciada por estimativa dando 500 cru; reativação silenciosa de cliente inativo ao editar; `PUT` de realizado zerando `origem`; limite negativo e FK inválida virando 500.
+
+### Pendente — bloqueado por dados que NÃO estão nesta máquina
+- **Série oficial SINAPI** (hoje placeholder de fator 1): o CRUD/tela dá para fazer; carregar a série real, não.
+- **Robustez do parser** em layouts variados de PDF: precisa dos orçamentos reais.
+- **Anexo de 38 MB do MAPP-6219** no banco: precisa da pasta `orcamentos/` + `--commit --force` (o código de conexão direta já está pronto — commit `c8cebc5`).
+
+### Ação do usuário recomendada
+- Trocar o `JWT_SECRET` do `.env` local (hoje é um fragmento da senha do banco) pelo **segredo real do app Promav** — sem isso, os logins não são compatíveis com o app principal.
+- Conferir de onde a connection string de **produção** foi copiada, para não repetir o quase-acidente.
