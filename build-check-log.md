@@ -527,6 +527,34 @@ cria e edita (`ObraForm`); tabela do Acervo com coluna Cliente + Editar + × Exc
 
 ---
 
+## Atualização 2026-07-09 — migration 009: UNIQUE(obras.codigo)
+
+Follow-up do review anterior. `db/migrations/009_obras_codigo_unique.sql` adiciona a
+garantia física de unicidade do código da obra (a aplicação já retornava 409, mas faltava
+a constraint no banco — defesa final; o handler global já mapeia `23505`→409).
+
+A migration é **idempotente e segura contra dados legados**: antes de criar o índice único,
+desambigua códigos repetidos pré-existentes renomeando as ocorrências extras para
+`<codigo>-DUP-<id>` (o id é único → sem colisão), **sem apagar nenhuma obra**. Após a 1ª
+execução não há duplicatas, então re-rodar é no-op.
+
+**Aplicada e verificada na branch dev** (`.env` reconferido = `ep-restless-dawn-af2pfvm7`, não prod):
+| Verificação | Resultado |
+|-------------|-----------|
+| npm run migrate | ✅ 001→009 OK (idempotentes); 19 objetos |
+| obras preservadas | ✅ 4 (nenhuma perdida/renomeada — não havia duplicatas na dev) |
+| índice único | ✅ `obras_codigo_uk` existe (`CREATE UNIQUE INDEX ... (codigo)`) |
+| enforcement | ✅ INSERT de código duplicado → `23505` (testado em transação revertida) |
+
+### Para o Cowork
+> UNIQUE(obras.codigo) aplicado na dev. A migration lida com duplicatas legadas renomeando as
+> extras para `-DUP-<id>` (não apaga nada) — se a produção/outra branch tiver códigos repetidos
+> de importações, ao rodar `npm run migrate` lá elas serão desambiguadas automaticamente; vale
+> conferir depois se algum código renomeado precisa de ajuste manual. Na dev não havia duplicatas,
+> então nada foi renomeado.
+
+---
+
 ## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
 
 O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a
