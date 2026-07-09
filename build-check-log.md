@@ -665,6 +665,44 @@ usuário.
 
 ---
 
+## Atualização 2026-07-09 — busca/filtro de obras (RF-E01) + export CSV (RF-G03)
+
+Duas histórias de valor da auditoria.
+
+**Filtro (RF-E01):** `GET /api/obras` passou a aceitar busca (código/nome via `ILIKE`),
+tipo, padrão, localidade, cliente, status, elegibilidade, faixa de área e ordenação —
+tudo com params **bindados** e `ORDER BY` de **allowlist**. No front, barra de filtros no
+Acervo com recarga *debounced* + botão "Limpar". Carregamento dividido (refs/indicadores
+na montagem; obras no `[filtros]`).
+**Export CSV (RF-G03):** util client-side `src/data/exportar.js` (`;` + BOM UTF-8) e botão
+"Exportar CSV" no Acervo (respeita o filtro atual) e no Comparar.
+
+### Revisão adversarial (workflow, 2 lentes) — 5 achados distintos, TODOS corrigidos
+| # | Achado (sev) | Correção |
+|---|--------------|----------|
+| 1 (média) | **`ORDER BY` burlava a allowlist por chave de protótipo** (`?ordenar=constructor`/`__proto__`/`toString` → valor truthy herdado → SQL inválido → **500** + vaza `err.message`). Meu teste de injeção só cobria strings com cara de SQL. | `Object.hasOwn(ORDENS_OBRA, ordenar)` antes do lookup. |
+| 2 (média) | **CSV formula injection** (CWE-1236): código/nome iniciando por `= + - @` vira fórmula no Excel. Vetor via POST e via ETL de importação. | `esc()` prefixa esses valores com `'`. |
+| 3 (baixa) | CSV do Acervo com número `.` decimal → Excel pt-BR lê como texto. | Colunas numéricas formatadas com `num(v,2)` (vírgula decimal). |
+| 4 (baixa) | **Race** em `carregarObras` (debounce + recarregar pós-mutação) → resposta fora de ordem podia reexibir dado obsoleto. | Guarda de sequência via `useRef` ("última resposta vence"). |
+| 5 (baixa) | Curingas `%`/`_` do usuário não escapados no `ILIKE` → falso-positivo de busca. | Escape de `\ % _` no valor bindado. |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 28 módulos |
+| filtros (servidor real) | ✅ 10/10 (cada filtro isolado; injeção no `ordenar` → fallback) |
+| fixes do review (servidor real) | ✅ 8/8: `ordenar` com chave de protótipo → 200; escape do `ILIKE` (underscore literal não casa hífen) |
+| CSV (browser) | ✅ fórmula (`=1+1`, `=HYPERLINK…`) prefixada com `'`; números pt-BR (`442.678,30`); filtro segue funcionando |
+
+### Para o Cowork
+> Busca/filtro de obras e export CSV no ar. O review pegou um furo real que meu teste não
+> pegou: chaves de protótipo (`?ordenar=constructor`) burlavam a allowlist do ORDER BY e davam
+> 500 — corrigido com `Object.hasOwn`. Também blindei o CSV contra formula-injection (valores
+> iniciados por `=+-@` recebem `'`). O export do Acervo usa vírgula decimal (Excel pt-BR); o do
+> Comparar sai formatado (relatório de leitura, por design).
+
+---
+
 # 📋 RESUMO DA SESSÃO — 2026-07-09
 
 > As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta

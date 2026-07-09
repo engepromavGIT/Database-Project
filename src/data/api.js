@@ -63,7 +63,11 @@ export const api = {
   updateCliente: (id, data) => req('PUT', `/clientes/${id}`, data),
 
   // ----- obras / indicadores / dashboard -----
-  obras: () => req('GET', '/obras'),
+  obras: (filtros) => {
+    const ativos = Object.entries(filtros || {}).filter(([, v]) => v !== '' && v != null)
+    const qs = ativos.length ? `?${new URLSearchParams(ativos).toString()}` : ''
+    return req('GET', `/obras${qs}`)
+  },
   obra: (id) => req('GET', `/obras/${id}`),
   createObra: (data) => req('POST', '/obras', data),
   updateObra: (id, data) => req('PUT', `/obras/${id}`, data),

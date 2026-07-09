@@ -1,7 +1,13 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, monthToDate } from '../data/format.js'
+import { brl, num, monthToDate } from '../data/format.js'
+import { baixarCSV } from '../data/exportar.js'
 import { ObraDetalhe } from './ObraDetalhe.jsx'
+
+const FILTRO_VAZIO = {
+  busca: '', tipoObraId: '', padraoId: '', localidadeId: '', clienteId: '',
+  status: '', elegivel: '', areaMin: '', areaMax: '', ordenar: 'recente',
+}
 
 const STATUS = [
   ['planejada', 'Planejada'], ['em_andamento', 'Em andamento'],
@@ -147,17 +153,30 @@ export function Acervo({ user }) {
   const [ind, setInd] = useState([])
   const [sel, setSel] = useState(null)          // obra em detalhe
   const [editando, setEditando] = useState(null) // obra em edição
+  const [filtros, setFiltros] = useState(FILTRO_VAZIO)
   const [erro, setErro] = useState(null)
+  const reqSeq = useRef(0) // "última resposta vence": ignora fetch de obras que chegou fora de ordem
+  const setF = (k) => (e) => setFiltros((f) => ({ ...f, [k]: e.target.value }))
 
-  const carregar = async () => {
+  // Cadastros de referência + indicadores (recarregam pouco).
+  const carregarAux = async () => {
     try {
-      const [t, p, l, cl, o, i] = await Promise.all([
-        api.tiposObra(), api.padroes(), api.localidades(), api.clientes(), api.obras(), api.indicadores(),
+      const [t, p, l, cl, i] = await Promise.all([
+        api.tiposObra(), api.padroes(), api.localidades(), api.clientes(), api.indicadores(),
       ])
-      setTipos(t); setPadroes(p); setLocalidades(l); setClientes(cl); setObras(o); setInd(i)
+      setTipos(t); setPadroes(p); setLocalidades(l); setClientes(cl); setInd(i)
     } catch (e) { setErro(e.message) }
   }
-  useEffect(() => { carregar() }, [])
+  const carregarObras = async () => {
+    const seq = ++reqSeq.current
+    try { const d = await api.obras(filtros); if (seq === reqSeq.current) setObras(d) }
+    catch (e) { if (seq === reqSeq.current) setErro(e.message) }
+  }
+  useEffect(() => { carregarAux() }, [])
+  // Recarrega as obras (debounced) sempre que um filtro muda; roda também na montagem.
+  useEffect(() => { const id = setTimeout(carregarObras, 250); return () => clearTimeout(id) }, [filtros])
+  // Após uma mutação: recarrega obras (respeitando os filtros) + auxiliares.
+  const recarregar = async () => { await carregarObras(); await carregarAux() }
 
   const excluir = async (o) => {
     if (!window.confirm(`Excluir a obra ${o.codigo} e todo o seu detalhamento? Esta ação não pode ser desfeita.`)) return
@@ -166,9 +185,23 @@ export function Acervo({ user }) {
       await api.deleteObra(o.id)
       if (sel?.id === o.id) setSel(null)
       if (editando?.id === o.id) setEditando(null)
-      await carregar()
+      await recarregar()
     } catch (e) { setErro(e.message) }
   }
+
+  const exportarCSV = () => baixarCSV('obras.csv', [
+    { rotulo: 'Código', valor: (o) => o.codigo },
+    { rotulo: 'Nome', valor: (o) => o.nome },
+    { rotulo: 'Cliente', valor: (o) => o.cliente || '' },
+    { rotulo: 'Tipo', valor: (o) => o.tipoObra || '' },
+    { rotulo: 'Padrão', valor: (o) => o.padrao || '' },
+    // Números formatados em pt-BR (vírgula decimal) p/ o Excel pt-BR tratá-los como número.
+    { rotulo: 'Área construída (m²)', valor: (o) => (o.areaConstruidaM2 != null ? num(o.areaConstruidaM2, 2) : '') },
+    { rotulo: 'Custo orçado', valor: (o) => (o.custoOrcadoTotal != null ? num(o.custoOrcadoTotal, 2) : '') },
+    { rotulo: 'Custo real', valor: (o) => (o.custoRealTotal != null ? num(o.custoRealTotal, 2) : '') },
+    { rotulo: 'Status', valor: (o) => o.status || '' },
+    { rotulo: 'Elegível referência', valor: (o) => (o.elegivelReferencia ? 'sim' : 'não') },
+  ], obras)
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 'var(--sp-4)', alignItems: 'start' }}>
@@ -178,21 +211,58 @@ export function Acervo({ user }) {
             const atualizada = await api.updateObra(editando.id, d)
             setEditando(null)
             setSel((prev) => (prev && prev.id === atualizada.id ? atualizada : prev)) // sincroniza o detalhe aberto
-            await carregar()
+            await recarregar()
           }}
           onCancelar={() => setEditando(null)} />
       ) : (
         <ObraForm tipos={tipos} padroes={padroes} localidades={localidades} clientes={clientes} inicial={null}
-          onSalvar={async (d) => { await api.createObra(d); await carregar() }} />
+          onSalvar={async (d) => { await api.createObra(d); await recarregar() }} />
       )}
 
       <div style={{ display: 'grid', gap: 'var(--sp-4)' }}>
         {erro && <div className="login-error">{erro}</div>}
 
         <section className="card" style={{ padding: 'var(--sp-4)' }}>
-          <div className="eyebrow">Obras no acervo ({obras.length})</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="eyebrow">Obras no acervo ({obras.length})</div>
+            <button className="btn btn-ghost btn-sm" onClick={exportarCSV} disabled={obras.length === 0}>Exportar CSV</button>
+          </div>
+
+          {/* Busca/filtro de obras (RF-E01) */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: 'var(--sp-3) 0' }}>
+            <input className="control" style={{ flex: '2 1 160px' }} placeholder="Buscar código ou nome…" value={filtros.busca} onChange={setF('busca')} />
+            <select className="control" style={{ flex: '1 1 110px' }} value={filtros.tipoObraId} onChange={setF('tipoObraId')}>
+              <option value="">tipo — todos</option>{tipos.map((t) => <option key={t.id} value={t.id}>{t.nome}</option>)}
+            </select>
+            <select className="control" style={{ flex: '1 1 110px' }} value={filtros.padraoId} onChange={setF('padraoId')}>
+              <option value="">padrão — todos</option>{padroes.map((p) => <option key={p.id} value={p.id}>{p.nome}</option>)}
+            </select>
+            <select className="control" style={{ flex: '1 1 130px' }} value={filtros.localidadeId} onChange={setF('localidadeId')}>
+              <option value="">localidade — todas</option>{localidades.map((l) => <option key={l.id} value={l.id}>{l.municipio}/{l.uf}</option>)}
+            </select>
+            <select className="control" style={{ flex: '1 1 130px' }} value={filtros.clienteId} onChange={setF('clienteId')}>
+              <option value="">cliente — todos</option>{clientes.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+            <select className="control" style={{ flex: '1 1 110px' }} value={filtros.status} onChange={setF('status')}>
+              <option value="">status — todos</option>{STATUS.map(([v, r]) => <option key={v} value={v}>{r}</option>)}
+            </select>
+            <select className="control" style={{ flex: '1 1 110px' }} value={filtros.elegivel} onChange={setF('elegivel')}>
+              <option value="">ref. — todas</option><option value="true">elegível</option><option value="false">não elegível</option>
+            </select>
+            <input className="control" style={{ width: 88 }} type="number" placeholder="área mín" value={filtros.areaMin} onChange={setF('areaMin')} />
+            <input className="control" style={{ width: 88 }} type="number" placeholder="área máx" value={filtros.areaMax} onChange={setF('areaMax')} />
+            <select className="control" style={{ flex: '1 1 120px' }} value={filtros.ordenar} onChange={setF('ordenar')}>
+              <option value="recente">mais recentes</option>
+              <option value="codigo">código</option>
+              <option value="nome">nome</option>
+              <option value="area">maior área</option>
+              <option value="custo">maior custo</option>
+            </select>
+            <button className="btn btn-ghost btn-sm" onClick={() => setFiltros(FILTRO_VAZIO)}>Limpar</button>
+          </div>
+
           {obras.length === 0 ? (
-            <p className="empty">Nenhuma obra ainda. Cadastre a primeira ao lado.</p>
+            <p className="empty">Nenhuma obra {Object.entries(filtros).some(([k, v]) => k !== 'ordenar' && v !== '') ? 'encontrada com esses filtros.' : 'ainda. Cadastre a primeira ao lado.'}</p>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
@@ -217,7 +287,7 @@ export function Acervo({ user }) {
           )}
         </section>
 
-        {sel && <ObraDetalhe obra={sel} onClose={() => setSel(null)} onChanged={carregar} />}
+        {sel && <ObraDetalhe obra={sel} onClose={() => setSel(null)} onChanged={recarregar} />}
 
         <section className="card" style={{ padding: 'var(--sp-4)' }}>
           <div className="eyebrow">Indicadores (custo/m² e prazos)</div>

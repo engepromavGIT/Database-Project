@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
 import { brl, num } from '../data/format.js'
+import { baixarCSV } from '../data/exportar.js'
 
 const desvioPct = (fator) => (fator == null ? '—' : `${fator > 1 ? '+' : ''}${num((fator - 1) * 100, 1)}%`)
 
@@ -18,6 +19,13 @@ export function Comparar() {
     setErro(null)
     try { setCols(await api.comparar([...sel])) } catch (e) { setErro(e.message) }
   }
+
+  // Exporta o comparativo: uma linha por métrica, uma coluna por obra.
+  const exportarCSV = () => baixarCSV(
+    'comparativo.csv',
+    [{ rotulo: 'Métrica', valor: (l) => l.rotulo }, ...cols.map((o) => ({ rotulo: o.codigo, valor: (l) => l.fn(o) }))],
+    linhas.map(([rotulo, fn]) => ({ rotulo, fn })),
+  )
 
   const linhas = [
     ['Tipo', (o) => o.tipoObra || '—'],
@@ -51,7 +59,10 @@ export function Comparar() {
       </section>
 
       <section className="card" style={{ padding: 'var(--sp-4)', overflowX: 'auto' }}>
-        <div className="eyebrow">Comparativo</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="eyebrow">Comparativo</div>
+          {cols.length > 0 && <button className="btn btn-ghost btn-sm" onClick={exportarCSV}>Exportar CSV</button>}
+        </div>
         {cols.length === 0 ? (
           <p className="empty">Selecione obras à esquerda e clique em Comparar.</p>
         ) : (

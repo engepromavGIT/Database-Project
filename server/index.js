@@ -341,8 +341,39 @@ function obraCampos(body = {}) {
   }
 }
 
-app.get('/api/obras', wrap(async (_req, res) => {
-  res.json(await q(`${OBRA_LIST} ORDER BY o.created_at DESC`))
+// Busca/filtro de obras (RF-E01). Todos os filtros são opcionais e combinam com AND;
+// a ordenação vem de uma allowlist (nunca interpola entrada do usuário no ORDER BY).
+const ORDENS_OBRA = {
+  recente: 'o.created_at DESC',
+  codigo: 'o.codigo',
+  nome: 'o.nome',
+  area: 'o.area_construida_m2 DESC NULLS LAST',
+  custo: 'COALESCE(NULLIF(o.custo_real_total, 0), o.custo_orcado_total) DESC NULLS LAST',
+}
+app.get('/api/obras', wrap(async (req, res) => {
+  const { busca, tipoObraId, padraoId, localidadeId, clienteId, status, elegivel, areaMin, areaMax, ordenar } = req.query
+  const cond = []
+  const params = []
+  const bind = (v) => { params.push(v); return `$${params.length}` }
+  const num = (v) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+  if (busca) {
+    // Escapa os curingas do ILIKE (% _ \) para que a busca trate a entrada como literal.
+    const b = bind(`%${String(busca).replace(/[\\%_]/g, '\\$&')}%`)
+    cond.push(`(o.codigo ILIKE ${b} OR o.nome ILIKE ${b})`)
+  }
+  if (tipoObraId) cond.push(`o.tipo_obra_id = ${bind(tipoObraId)}`)
+  if (padraoId) cond.push(`o.padrao_id = ${bind(padraoId)}`)
+  if (localidadeId) cond.push(`o.localidade_id = ${bind(localidadeId)}`)
+  if (clienteId) cond.push(`o.cliente_id = ${bind(clienteId)}`)
+  if (status && STATUS_OBRA.includes(status)) cond.push(`o.status = ${bind(status)}`)
+  if (elegivel === 'true' || elegivel === 'false') cond.push(`o.elegivel_referencia = ${bind(elegivel === 'true')}`)
+  const aMin = num(areaMin); if (aMin != null) cond.push(`o.area_construida_m2 >= ${bind(aMin)}`)
+  const aMax = num(areaMax); if (aMax != null) cond.push(`o.area_construida_m2 <= ${bind(aMax)}`)
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : ''
+  // Object.hasOwn evita que chaves herdadas (constructor/toString/__proto__…) burlem a
+  // allowlist e injetem texto inválido no ORDER BY (geraria 500).
+  const orderBy = (typeof ordenar === 'string' && Object.hasOwn(ORDENS_OBRA, ordenar)) ? ORDENS_OBRA[ordenar] : ORDENS_OBRA.recente
+  res.json(await q(`${OBRA_LIST} ${where} ORDER BY ${orderBy}`, params))
 }))
 
 app.get('/api/obras/:id', wrap(async (req, res) => {
