@@ -57,10 +57,17 @@ export const api = {
   localidades: () => req('GET', '/localidades'),
   servicos: () => req('GET', '/servicos'),
 
+  // ----- clientes (RF-A01 / US-08) -----
+  clientes: (todos) => req('GET', `/clientes${todos ? '?todos=1' : ''}`),
+  createCliente: (data) => req('POST', '/clientes', data),
+  updateCliente: (id, data) => req('PUT', `/clientes/${id}`, data),
+
   // ----- obras / indicadores / dashboard -----
   obras: () => req('GET', '/obras'),
   obra: (id) => req('GET', `/obras/${id}`),
   createObra: (data) => req('POST', '/obras', data),
+  updateObra: (id, data) => req('PUT', `/obras/${id}`, data),
+  deleteObra: (id) => req('DELETE', `/obras/${id}`),
   indicadores: () => req('GET', '/indicadores'),
   dashboard: () => req('GET', '/dashboard'),
 

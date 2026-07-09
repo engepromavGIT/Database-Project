@@ -6,6 +6,7 @@ import { Estimativa } from './screens/Estimativa.jsx'
 import { Cenarios } from './screens/Cenarios.jsx'
 import { Comparar } from './screens/Comparar.jsx'
 import { Importar } from './screens/Importar.jsx'
+import { Clientes } from './screens/Clientes.jsx'
 import { Auditoria } from './screens/Auditoria.jsx'
 
 // ---------------- Login ----------------
@@ -61,6 +62,7 @@ function Login({ onLogin }) {
 const ABAS = [
   ['painel', 'Painel', Dashboard],
   ['acervo', 'Acervo', Acervo],
+  ['clientes', 'Clientes', Clientes],
   ['estimativa', 'Estimativa', Estimativa],
   ['cenarios', 'Cenários', Cenarios],
   ['comparar', 'Comparar', Comparar],
@@ -93,7 +95,7 @@ function Shell({ user, onLogout }) {
         </div>
       </header>
 
-      <Tela />
+      <Tela user={user} />
     </div>
   )
 }

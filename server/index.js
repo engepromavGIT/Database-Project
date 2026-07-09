@@ -261,14 +261,54 @@ app.get('/api/servicos', wrap(async (_req, res) => {
   res.json(await q('SELECT id, codigo_sinapi AS "codigoSinapi", descricao, unidade, categoria_id AS "categoriaId" FROM orcamento.servicos_ref WHERE ativo = true ORDER BY descricao'))
 }))
 
+// ----- Clientes (RF-A01 / US-08): CRUD. GET default só ativos; ?todos=1 traz inativos.
+// "Excluir" = inativar (PUT ativo=false), pois obras referenciam o cliente (FK).
+app.get('/api/clientes', wrap(async (req, res) => {
+  const todos = req.query.todos === '1'
+  res.json(await q(
+    `SELECT id, nome, documento, ativo FROM orcamento.clientes
+     ${todos ? '' : 'WHERE ativo = true'} ORDER BY nome`))
+}))
+app.post('/api/clientes', wrap(async (req, res) => {
+  const { nome, documento = null } = req.body || {}
+  if (!nome || !nome.trim()) return res.status(400).json({ error: 'Informe o nome do cliente.' })
+  const doc = (documento || '').trim() || null
+  const id = genId('cli')
+  await q('INSERT INTO orcamento.clientes (id, nome, documento, ativo) VALUES ($1,$2,$3,true)',
+    [id, nome.trim(), doc])
+  await registrarLog(req, 'create', 'cliente', id)
+  const [c] = await q('SELECT id, nome, documento, ativo FROM orcamento.clientes WHERE id = $1', [id])
+  res.status(201).json(c)
+}))
+app.put('/api/clientes/:id', wrap(async (req, res) => {
+  const { nome, documento = null, ativo } = req.body || {}
+  if (!nome || !nome.trim()) return res.status(400).json({ error: 'Informe o nome do cliente.' })
+  const doc = (documento || '').trim() || null
+  // ativo ausente → preserva o valor atual (não reativa um inativo ao editar metadados).
+  const ativoParam = typeof ativo === 'boolean' ? ativo : null
+  const upd = await q(
+    'UPDATE orcamento.clientes SET nome=$2, documento=$3, ativo=COALESCE($4, ativo) WHERE id=$1 RETURNING id, nome, documento, ativo',
+    [req.params.id, nome.trim(), doc, ativoParam])
+  if (!upd.length) return res.status(404).json({ error: 'Cliente não encontrado.' })
+  await registrarLog(req, 'update', 'cliente', req.params.id)
+  res.json(upd[0])
+}))
+
 // ============================================================
 // Obras (acervo)
 // ============================================================
 const OBRA_LIST = `
   SELECT o.id, o.codigo, o.nome,
+         o.cliente_id   AS "clienteId", cli.nome AS cliente,
+         o.tipo_obra_id AS "tipoObraId", o.padrao_id AS "padraoId", o.localidade_id AS "localidadeId",
          o.area_construida_m2 AS "areaConstruidaM2",
+         o.area_terreno_m2    AS "areaTerrenoM2",
+         o.num_pavimentos     AS "numPavimentos",
+         to_char(o.dt_inicio_plan, 'YYYY-MM-DD') AS "dtInicioPlan",
+         to_char(o.dt_fim_plan,    'YYYY-MM-DD') AS "dtFimPlan",
          to_char(o.dt_inicio_real, 'YYYY-MM-DD') AS "dtInicioReal",
          to_char(o.dt_fim_real,    'YYYY-MM-DD') AS "dtFimReal",
+         to_char(o.data_base_custo, 'YYYY-MM')   AS "dataBaseCusto",
          o.custo_orcado_total AS "custoOrcadoTotal",
          o.custo_real_total   AS "custoRealTotal",
          o.status,
@@ -276,8 +316,30 @@ const OBRA_LIST = `
          t.nome AS "tipoObra",
          p.nome AS "padrao"
   FROM orcamento.obras o
-  LEFT JOIN orcamento.tipos_obra        t ON t.id = o.tipo_obra_id
-  LEFT JOIN orcamento.padroes_acabamento p ON p.id = o.padrao_id`
+  LEFT JOIN orcamento.tipos_obra        t   ON t.id   = o.tipo_obra_id
+  LEFT JOIN orcamento.padroes_acabamento p  ON p.id   = o.padrao_id
+  LEFT JOIN orcamento.clientes          cli ON cli.id = o.cliente_id`
+
+// Normaliza os campos de uma obra (compartilhado por POST e PUT). Não inclui os totais
+// de custo — em obras detalhadas eles são derivados por recalcularObra(); em obras
+// manuais entram no create (POST). O PUT edita metadados, sem tocar nos custos.
+function obraCampos(body = {}) {
+  const b = body || {}
+  const numOrNull = (v) => (v === '' || v == null ? null : Number(v))
+  return {
+    codigo: b.codigo, nome: b.nome,
+    clienteId: b.clienteId || null, tipoObraId: b.tipoObraId || null,
+    padraoId: b.padraoId || null, localidadeId: b.localidadeId || null,
+    areaConstruidaM2: numOrNull(b.areaConstruidaM2),
+    areaTerrenoM2: numOrNull(b.areaTerrenoM2),
+    numPavimentos: numOrNull(b.numPavimentos),
+    dtInicioPlan: b.dtInicioPlan || null, dtFimPlan: b.dtFimPlan || null,
+    dtInicioReal: b.dtInicioReal || null, dtFimReal: b.dtFimReal || null,
+    dataBaseCusto: dataBaseDate(b.dataBaseCusto),
+    status: b.status || 'concluida',
+    elegivelReferencia: !!b.elegivelReferencia,
+  }
+}
 
 app.get('/api/obras', wrap(async (_req, res) => {
   res.json(await q(`${OBRA_LIST} ORDER BY o.created_at DESC`))
@@ -290,30 +352,75 @@ app.get('/api/obras/:id', wrap(async (req, res) => {
 }))
 
 app.post('/api/obras', wrap(async (req, res) => {
-  const {
-    codigo, nome, tipoObraId = null, padraoId = null, localidadeId = null,
-    areaConstruidaM2 = null, dtInicioReal = null, dtFimReal = null,
-    dataBaseCusto = null, status = 'concluida', elegivelReferencia = false,
-    custoRealTotal = null, custoOrcadoTotal = null,
-  } = req.body || {}
-
-  if (!codigo || !nome) return res.status(400).json({ error: 'Informe ao menos código e nome da obra.' })
-  if (!STATUS_OBRA.includes(status)) return res.status(400).json({ error: 'Status inválido.' })
+  const c = obraCampos(req.body)
+  const custoRealTotal = req.body?.custoRealTotal ?? null
+  const custoOrcadoTotal = req.body?.custoOrcadoTotal ?? null
+  if (!c.codigo || !c.nome) return res.status(400).json({ error: 'Informe ao menos código e nome da obra.' })
+  if (!STATUS_OBRA.includes(c.status)) return res.status(400).json({ error: 'Status inválido.' })
+  if ((await q('SELECT 1 FROM orcamento.obras WHERE codigo = $1', [c.codigo])).length)
+    return res.status(409).json({ error: 'Já existe uma obra com esse código.' })
 
   const id = genId('obra')
   await q(
     `INSERT INTO orcamento.obras
-       (id, codigo, nome, tipo_obra_id, padrao_id, localidade_id, area_construida_m2,
-        dt_inicio_real, dt_fim_real, data_base_custo, status, elegivel_referencia,
-        custo_real_total, custo_orcado_total, fonte_dado, criado_por)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'manual',$15)`,
-    [id, codigo, nome, tipoObraId, padraoId, localidadeId, areaConstruidaM2,
-      dtInicioReal, dtFimReal, dataBaseDate(dataBaseCusto), status, !!elegivelReferencia,
-      custoRealTotal, custoOrcadoTotal, req.userId],
+       (id, codigo, nome, cliente_id, tipo_obra_id, padrao_id, localidade_id,
+        area_construida_m2, area_terreno_m2, num_pavimentos,
+        dt_inicio_plan, dt_fim_plan, dt_inicio_real, dt_fim_real,
+        data_base_custo, status, elegivel_referencia, custo_real_total, custo_orcado_total,
+        fonte_dado, criado_por)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'manual',$20)`,
+    [id, c.codigo, c.nome, c.clienteId, c.tipoObraId, c.padraoId, c.localidadeId,
+      c.areaConstruidaM2, c.areaTerrenoM2, c.numPavimentos,
+      c.dtInicioPlan, c.dtFimPlan, c.dtInicioReal, c.dtFimReal,
+      c.dataBaseCusto, c.status, c.elegivelReferencia, custoRealTotal, custoOrcadoTotal,
+      req.userId],
   )
   const [obra] = await q(`${OBRA_LIST} WHERE o.id = $1`, [id])
   await registrarLog(req, 'create', 'obra', id)
   res.status(201).json(obra)
+}))
+
+// Edição de obra (RF-B01/US-13): metadados. NÃO altera os totais de custo (derivados
+// em obras detalhadas; setados no create em obras manuais). Aberta a qualquer autenticado.
+app.put('/api/obras/:id', wrap(async (req, res) => {
+  const c = obraCampos(req.body)
+  if (!c.codigo || !c.nome) return res.status(400).json({ error: 'Informe ao menos código e nome da obra.' })
+  if (!STATUS_OBRA.includes(c.status)) return res.status(400).json({ error: 'Status inválido.' })
+  if ((await q('SELECT 1 FROM orcamento.obras WHERE codigo = $1 AND id <> $2', [c.codigo, req.params.id])).length)
+    return res.status(409).json({ error: 'Já existe outra obra com esse código.' })
+  const upd = await q(
+    `UPDATE orcamento.obras SET
+       codigo=$2, nome=$3, cliente_id=$4, tipo_obra_id=$5, padrao_id=$6, localidade_id=$7,
+       area_construida_m2=$8, area_terreno_m2=$9, num_pavimentos=$10,
+       dt_inicio_plan=$11, dt_fim_plan=$12, dt_inicio_real=$13, dt_fim_real=$14,
+       data_base_custo=$15, status=$16, elegivel_referencia=$17, updated_at=now()
+     WHERE id=$1 RETURNING id`,
+    [req.params.id, c.codigo, c.nome, c.clienteId, c.tipoObraId, c.padraoId, c.localidadeId,
+      c.areaConstruidaM2, c.areaTerrenoM2, c.numPavimentos,
+      c.dtInicioPlan, c.dtFimPlan, c.dtInicioReal, c.dtFimReal,
+      c.dataBaseCusto, c.status, c.elegivelReferencia],
+  )
+  if (!upd.length) return res.status(404).json({ error: 'Obra não encontrada.' })
+  const [obra] = await q(`${OBRA_LIST} WHERE o.id = $1`, [req.params.id])
+  await registrarLog(req, 'update', 'obra', req.params.id)
+  res.json(obra)
+}))
+
+// Excluir a obra inteira (CASCADE em etapas/itens/realizados/medições/anexos) é destrutivo
+// de nível superior → restrito a admin (o requireAdmin roda depois do gate global de auth).
+// estimativa_referencias NÃO cascateia (preserva o histórico de estimativas), então uma
+// obra usada como análoga em estimativa salva não pode ser excluída — resposta 409 clara.
+app.delete('/api/obras/:id', requireAdmin, wrap(async (req, res) => {
+  let del
+  try {
+    del = await q('DELETE FROM orcamento.obras WHERE id = $1 RETURNING id', [req.params.id])
+  } catch (e) {
+    if (e.code === '23503') return res.status(409).json({ error: 'Não é possível excluir: a obra é referência de uma ou mais estimativas salvas.' })
+    throw e
+  }
+  if (!del.length) return res.status(404).json({ error: 'Obra não encontrada.' })
+  await registrarLog(req, 'delete', 'obra', req.params.id)
+  res.json({ ok: true })
 }))
 
 // ============================================================
@@ -664,6 +771,9 @@ registrarObraDetalhe(app)
 // ---------- erro ----------
 app.use((err, _req, res, _next) => {
   console.error('[base-projetos] erro na API:', err.message)
+  // Traduz erros conhecidos do Postgres em respostas de negócio (evita 500 cru + vazar schema).
+  if (err.code === '23503') return res.status(400).json({ error: 'Referência inválida (cliente, tipo, padrão ou localidade inexistente).' })
+  if (err.code === '23505') return res.status(409).json({ error: 'Registro duplicado.' })
   res.status(500).json({ error: err.message })
 })
 

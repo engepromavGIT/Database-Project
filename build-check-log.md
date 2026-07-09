@@ -481,6 +481,52 @@ Duas pequenas extrações tornaram a lógica testável sem banco/PDF (comportame
 
 ---
 
+## Atualização 2026-07-09 — CRUD de clientes + edição/exclusão de obra (RF-A01 / RF-B01)
+
+Quarta frente da auditoria (ranks 12 e 15). A tabela `orcamento.clientes` e a FK
+`obras.cliente_id` já existiam (migration 001) — faltava CRUD e UI, e a obra não gravava
+vários campos gerais.
+
+**Backend (server/index.js):** clientes GET (`?todos=1`)/POST/PUT ("excluir" = inativar,
+por causa da FK); obra ganhou `PUT` (edita metadados, aberto a autenticados; NÃO altera
+custos — derivados/definidos no create) e `DELETE` (**admin-only** — destrutivo em cascata;
+dá à requireAdmin uma superfície de mutação real). POST/PUT de obra passam a gravar
+cliente_id + área de terreno + nº de pavimentos + datas planejadas + status. OBRA_LIST
+expandido (cliente via JOIN + campos gerais). Helper `obraCampos()` compartilhado. registrarLog
+em todos os novos mutadores.
+**Frontend:** aba **Clientes** (`src/screens/Clientes.jsx`); o form de obra virou um só que
+cria e edita (`ObraForm`); tabela do Acervo com coluna Cliente + Editar + × Excluir (admin).
+
+### Revisão adversarial (workflow, 3 lentes) — 7 achados distintos, TODOS corrigidos
+| # | Achado (sev) | Correção |
+|---|--------------|----------|
+| 1 (média) | Editar cliente inativo o **reativava** silenciosamente (form enviava `ativo:true`). | Front não envia `ativo` na edição; backend usa `COALESCE($4, ativo)` (preserva). |
+| 2 (alta) | Excluir obra referenciada por estimativa → **500 cru** (FK `estimativa_referencias` sem CASCADE). | DELETE trata `23503` → **409** claro (preserva o histórico da estimativa). |
+| 3 (média) | id de FK inexistente (cliente/tipo/…) → 500 cru vazando schema. | Handler global mapeia `23503`→400 e `23505`→409. |
+| 4 (média) | `obras.codigo` sem unicidade — POST/PUT criavam duplicatas. | Checagem no POST e no PUT (exclui a si mesma) → **409**. |
+| 5 (média) | Cliente inativado sumia do dropdown na edição → campo em branco, risco de clobber. | Injeta uma `<option>` "(inativo)" para o cliente vinculado. |
+| 6 (baixa) | `documento` do cliente sem trim no servidor. | `(documento||'').trim() || null` no POST/PUT. |
+| 7 (baixa) | Detalhe aberto desatualizava ao editar a mesma obra. | onSalvar sincroniza `sel` com a obra atualizada. |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 27 módulos |
+| CRUD live (servidor real :3010) — 1ª rodada | ✅ 14/14 (clientes CRUD, obra c/ campos gerais, edição, delete admin-only 403/200, auditoria) |
+| Re-teste dos fixes do review | ✅ 7/7 (não-reativação, 409 na exclusão referenciada, 400 em FK inválida, 409 em código duplicado, trim de documento) |
+| UI (stub, 2 papéis) | ✅ aba Clientes (todos) e Auditoria (admin); form de obra com campos novos; Editar prefill + custos ocultos; × Excluir só p/ admin. Um bug no *stub* de teste (colisão de id) foi corrigido — não era do app. |
+
+### Para o Cowork
+> CRUD de clientes + edição/exclusão de obra no ar. **DELETE de obra é admin-only** (destrutivo,
+> cascata) — primeira mutação de fato restrita a admin, além da consulta de auditoria. O PUT de
+> obra edita metadados e **não toca nos custos** (derivados nas detalhadas). Um review adversarial
+> pegou 7 itens reais (todos corrigidos), com destaque para: excluir obra usada em estimativa
+> agora dá **409** (a FK `estimativa_referencias.obra_id` propositalmente não cascateia, p/ preservar
+> o histórico); e editar um cliente inativo não o reativa mais. **Follow-up sugerido:** uma migration
+> para `UNIQUE(obras.codigo)` (hoje a unicidade é só na aplicação; requer deduplicar importados antes).
+
+---
+
 ## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
 
 O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a
