@@ -449,6 +449,38 @@ auditoria dá o rastro.
 
 ---
 
+## Atualização 2026-07-09 — cobertura de testes (auth, anexos, ETL)
+
+Segunda frente da auditoria: travar o comportamento do código sensível que não tinha teste.
+Duas pequenas extrações tornaram a lógica testável sem banco/PDF (comportamento idêntico).
+
+**Novos testes**
+- **`tests/auth.test.mjs`** (11 casos) — `hashPassword`/`verifyPassword` (roundtrip + senha errada),
+  `signToken`+`requireAuth` (roundtrip), aceitação por header **e** `?token=`, precedência
+  header>query, e os 401 (sem token, assinatura inválida, expirado, sem "Bearer "). Sem banco:
+  o segredo é fixado antes de um `import()` dinâmico. `requireAdmin`/`registrarLog` (dependem do
+  banco) seguem cobertos pelo teste de integração.
+- **`tests/anexos.test.mjs`** (7 casos) — extraí `contentDispositionAnexo()` (pura, exportada) de
+  `server/obraDetalhe.js` e testo: ASCII simples, o **caso Unicode que causava o 500** (header 100%
+  ASCII + `filename*` que decodifica de volta), remoção de aspas/CR-LF, e fallback "anexo".
+- **`scripts/tests/test_importar_orcamento.py`** (11 casos, pytest) — extraí `particionar_anexos()`
+  (pura) de `commit()` e testo `url_direta()` (pooler→direta, já-direta→None, porta/query, senha com
+  "-pooler" intocada, localhost) e a partição pooler×direta×local (limite `>` estrito, sem-direta,
+  mistura). Deps de teste em `scripts/requirements-dev.txt`; roda com `npm run test:py`.
+
+**Verificação:** `npm run check` OK · `npm test` **97 passou, 0 falhou** (era 79 — +11 auth +7 anexos) ·
+`python -m pytest scripts/tests` **11 passed** · `npm run build` OK (26 módulos) · `py_compile` OK.
+
+### Para o Cowork
+> Cobertura adicionada para a auth (JWT/senha), a sanitização de nome de anexo (o fix do 500) e as
+> funções puras do ETL (`url_direta`, partição de anexos). O `npm test` agora tem 97 casos e continua
+> **sem depender de banco**; os testes de Python são separados (`npm run test:py`, precisa
+> `pip install -r scripts/requirements-dev.txt`). Fiz duas extrações de função pura (`contentDispositionAnexo`,
+> `particionar_anexos`) — comportamento preservado, só ficou testável. Não migrei os 6 testes antigos
+> para um harness comum (baixo valor, evitei churn nos que já passam).
+
+---
+
 ## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
 
 O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a

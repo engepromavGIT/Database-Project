@@ -8,6 +8,15 @@ import { curvaABC } from './curvaABC.js'
 const genId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
+// Monta o Content-Disposition de um anexo. O parâmetro filename= só aceita ASCII
+// (o Node lança ERR_INVALID_CHAR em codepoint > 0xFF), então dá o nome real acentuado
+// em filename*=UTF-8'' (RFC 5987/6266) e um fallback ASCII em filename=. Puro/testável.
+export function contentDispositionAnexo(filename) {
+  const nome = (filename || 'anexo').replace(/["\r\n]/g, '')
+  const asciiNome = nome.replace(/[^\x20-\x7E]/g, '_')
+  return `attachment; filename="${asciiNome}"; filename*=UTF-8''${encodeURIComponent(nome)}`
+}
+
 // Recalcula subtotais das etapas e os totais da obra a partir de itens/realizados.
 async function recalcularObra(obraId) {
   await q(
@@ -146,14 +155,8 @@ export function registrarObraDetalhe(app) {
       'SELECT filename, mime_type AS "mimeType", data FROM orcamento.anexos WHERE id = $1',
       [req.params.id])
     if (!a) return res.status(404).json({ error: 'Anexo não encontrado.' })
-    const nome = (a.filename || 'anexo').replace(/["\r\n]/g, '')
-    // Content-Disposition: o parâmetro filename= só aceita ASCII (o Node lança
-    // ERR_INVALID_CHAR em codepoint > 0xFF). filename*=UTF-8'' carrega o nome real
-    // acentuado (RFC 5987/6266); filename= vira um fallback ASCII p/ navegadores antigos.
-    const asciiNome = nome.replace(/[^\x20-\x7E]/g, '_')
     res.setHeader('Content-Type', a.mimeType || 'application/octet-stream')
-    res.setHeader('Content-Disposition',
-      `attachment; filename="${asciiNome}"; filename*=UTF-8''${encodeURIComponent(nome)}`)
+    res.setHeader('Content-Disposition', contentDispositionAnexo(a.filename))
     res.send(a.data)
   }))
 }

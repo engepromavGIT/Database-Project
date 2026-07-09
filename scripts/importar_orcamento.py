@@ -432,6 +432,24 @@ def url_direta(url):
         return None
     return m.group(1) + m.group(2).replace("-pooler", "", 1) + m.group(3)
 
+def particionar_anexos(itens, pooler_mb, max_mb, tem_direta):
+    """Decide o destino de cada anexo por tamanho — função PURA (sem I/O, testável).
+    itens: lista de (path, size_bytes). Devolve (pequenos, grandes, ignorados):
+      - pequenos : entram na transação normal (via pooler);
+      - grandes  : > pooler_mb e há conexão direta → gravados por conexão direta;
+      - ignorados: > max_mb → ficam só locais.
+    Sem conexão direta (tem_direta falso), tudo até max_mb vai para 'pequenos'."""
+    pequenos, grandes, ignorados = [], [], []
+    for path, size in itens:
+        mb = size / (1024 * 1024)
+        if mb > max_mb:
+            ignorados.append(path)
+        elif mb > pooler_mb and tem_direta:
+            grandes.append(path)
+        else:
+            pequenos.append(path)
+    return pequenos, grandes, ignorados
+
 def commit(obra, etapas, itens, anexos, force=False):
     import psycopg2
     url = ler_database_url()
@@ -530,16 +548,12 @@ def commit(obra, etapas, itens, anexos, force=False):
         max_mb = float(os.environ.get("ANEXO_MAX_MB", "100"))
         pooler_mb = float(os.environ.get("ANEXO_POOLER_MAX_MB", "25"))
         direta = url_direta(url)   # None → a URL já é direta; não há limite do pooler
-        pequenos, grandes = [], []
-        for path in anexos:
+        tamanhos = [(path, os.path.getsize(path)) for path in anexos]
+        pequenos, grandes, ignorados = particionar_anexos(tamanhos, pooler_mb, max_mb, bool(direta))
+        for path in ignorados:
             mb = os.path.getsize(path) / (1024 * 1024)
-            if mb > max_mb:
-                print(f"AVISO: anexo {os.path.basename(path)} ({mb:.0f} MB) excede "
-                      f"{max_mb:.0f} MB (ANEXO_MAX_MB) — não será gravado no banco (fica só local).")
-            elif mb > pooler_mb and direta:
-                grandes.append(path)
-            else:
-                pequenos.append(path)
+            print(f"AVISO: anexo {os.path.basename(path)} ({mb:.0f} MB) excede "
+                  f"{max_mb:.0f} MB (ANEXO_MAX_MB) — não será gravado no banco (fica só local).")
 
         def inserir_anexo(c, path):
             with open(path, "rb") as fh:

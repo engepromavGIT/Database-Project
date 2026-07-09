@@ -1,0 +1,5 @@
+# Dependências de teste do ETL (à parte das de runtime em requirements.txt).
+# Instale: pip install -r scripts/requirements-dev.txt
+# Rode:    python -m pytest scripts/tests -q   (ou: npm run test:py)
+-r requirements.txt
+pytest>=8
