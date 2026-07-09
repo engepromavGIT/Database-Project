@@ -28,6 +28,8 @@ const fmtBytes = (b) => {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
 }
 
+const ITEM_VAZIO = { servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '', categoriaId: '' }
+
 export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [etapas, setEtapas] = useState([])
   const [servicos, setServicos] = useState([])
@@ -37,8 +39,11 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [itens, setItens] = useState([])
   const [realizados, setRealizados] = useState([])
   const [novaEtapa, setNovaEtapa] = useState({ descricao: '', codigoEap: '' })
-  const [novoItem, setNovoItem] = useState({ servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '' })
+  const [novoItem, setNovoItem] = useState(ITEM_VAZIO)
   const [novoReal, setNovoReal] = useState({ competencia: '', valor: '' })
+  const [editEtapaId, setEditEtapaId] = useState(null)
+  const [editItemId, setEditItemId] = useState(null)
+  const [editRealId, setEditRealId] = useState(null)
   const [erro, setErro] = useState(null)
 
   const recarregar = async () => {
@@ -58,31 +63,57 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
     api.obraAnexos(obra.id).then(setAnexos).catch(() => setAnexos([]))
     recarregar()
   }, [obra.id])
-  useEffect(() => { recarregarEtapa(sel).catch((e) => setErro(e.message)) }, [sel])
+  // Ao trocar de etapa, cancela qualquer edição de item/realizado da etapa anterior.
+  useEffect(() => {
+    cancelarItem(); cancelarReal()
+    recarregarEtapa(sel).catch((e) => setErro(e.message))
+  }, [sel])
 
   const acao = async (fn) => { setErro(null); try { await fn() } catch (e) { setErro(e.message) } }
 
-  const addEtapa = () => acao(async () => {
+  // ----- Etapas (adicionar/editar) -----
+  const cancelarEtapa = () => { setEditEtapaId(null); setNovaEtapa({ descricao: '', codigoEap: '' }) }
+  const editarEtapa = (e) => { setEditEtapaId(e.id); setNovaEtapa({ descricao: e.descricao || '', codigoEap: e.codigoEap || '' }) }
+  const salvarEtapa = () => acao(async () => {
     if (!novaEtapa.descricao.trim()) return
-    await api.addEtapa(obra.id, { descricao: novaEtapa.descricao.trim(), codigoEap: novaEtapa.codigoEap.trim() || null })
-    setNovaEtapa({ descricao: '', codigoEap: '' }); await recarregar()
+    const dados = { descricao: novaEtapa.descricao.trim(), codigoEap: novaEtapa.codigoEap.trim() || null }
+    if (editEtapaId) await api.updEtapa(editEtapaId, dados)
+    else await api.addEtapa(obra.id, dados)
+    cancelarEtapa(); await recarregar()
   })
-  const addItem = () => acao(async () => {
-    await api.addItem(sel, {
-      servicoRefId: novoItem.servicoRefId || null, descricao: novoItem.descricao || null, unidade: novoItem.unidade || null,
-      quantidade: Number(novoItem.quantidade), custoUnitario: Number(novoItem.custoUnitario),
+
+  // ----- Itens (adicionar/editar) -----
+  const cancelarItem = () => { setEditItemId(null); setNovoItem(ITEM_VAZIO) }
+  const editarItem = (i) => {
+    setEditItemId(i.id)
+    setNovoItem({
+      servicoRefId: i.servicoRefId || '', descricao: i.descricao || '', unidade: i.unidade || '',
+      quantidade: String(i.quantidade ?? ''), custoUnitario: String(i.custoUnitario ?? ''), categoriaId: i.categoriaId || '',
     })
-    setNovoItem({ servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '' })
-    await recarregarEtapa(sel); await recarregar()
-  })
-  const addReal = () => acao(async () => {
-    await api.addRealizado(sel, { competencia: novoReal.competencia, valor: Number(novoReal.valor) })
-    setNovoReal({ competencia: '', valor: '' }); await recarregarEtapa(sel); await recarregar()
+  }
+  const salvarItem = () => acao(async () => {
+    const dados = {
+      servicoRefId: novoItem.servicoRefId || null, descricao: novoItem.descricao || null, unidade: novoItem.unidade || null,
+      quantidade: Number(novoItem.quantidade), custoUnitario: Number(novoItem.custoUnitario), categoriaId: novoItem.categoriaId || null,
+    }
+    if (editItemId) await api.updItem(editItemId, dados)
+    else await api.addItem(sel, dados)
+    cancelarItem(); await recarregarEtapa(sel); await recarregar()
   })
   const escolherServico = (id) => {
     const s = servicos.find((x) => x.id === id)
     setNovoItem((f) => ({ ...f, servicoRefId: id, descricao: s ? s.descricao : f.descricao, unidade: s ? s.unidade : f.unidade }))
   }
+
+  // ----- Realizados (adicionar/editar) -----
+  const cancelarReal = () => { setEditRealId(null); setNovoReal({ competencia: '', valor: '' }) }
+  const editarReal = (r) => { setEditRealId(r.id); setNovoReal({ competencia: r.competencia || '', valor: String(r.valor ?? '') }) }
+  const salvarReal = () => acao(async () => {
+    const dados = { competencia: novoReal.competencia, valor: Number(novoReal.valor) }
+    if (editRealId) await api.updRealizado(editRealId, dados)
+    else await api.addRealizado(sel, dados)
+    cancelarReal(); await recarregarEtapa(sel); await recarregar()
+  })
 
   return (
     <section className="card" style={{ padding: 'var(--sp-4)', marginTop: 'var(--sp-4)' }}>
@@ -103,7 +134,7 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
             </tr></thead>
             <tbody>
               {[...etapas].sort(cmpEap).map((e) => (
-                <tr key={e.id} style={{ borderTop: '1px solid var(--border)', background: sel === e.id ? 'var(--bg-subtle)' : 'transparent' }}>
+                <tr key={e.id} style={{ borderTop: '1px solid var(--border)', background: sel === e.id || editEtapaId === e.id ? 'var(--bg-subtle)' : 'transparent' }}>
                   <td style={{ paddingLeft: 4 + profEap(e.codigoEap) * 16 }}>
                     <button className="btn btn-ghost btn-sm" style={{ fontWeight: profEap(e.codigoEap) === 0 ? 600 : 400 }} onClick={() => setSel(e.id)}>
                       <span style={{ color: 'var(--fg-3)', marginRight: 6 }}>{e.codigoEap}</span>{e.descricao}
@@ -111,7 +142,10 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
                   </td>
                   <td>{brl(e.custoOrcado)}</td><td>{brl(e.custoReal)}</td>
                   <td>{desvioPct(e.custoOrcado, e.custoReal)}</td>
-                  <td><button className="btn btn-ghost btn-sm" onClick={() => acao(async () => { await api.delEtapa(e.id); if (sel === e.id) setSel(null); await recarregar() })}>×</button></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn btn-ghost btn-sm" title="Editar" onClick={() => editarEtapa(e)}>✎</button>
+                    <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => acao(async () => { await api.delEtapa(e.id); if (sel === e.id) setSel(null); if (editEtapaId === e.id) cancelarEtapa(); await recarregar() })}>×</button>
+                  </td>
                 </tr>
               ))}
               {etapas.length === 0 && <tr><td colSpan="5" className="empty">Sem etapas. Adicione abaixo.</td></tr>}
@@ -119,9 +153,10 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
           </table>
           </div>
           <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-            <input className="control" placeholder="Nova etapa" value={novaEtapa.descricao} onChange={(e) => setNovaEtapa((f) => ({ ...f, descricao: e.target.value }))} />
+            <input className="control" placeholder={editEtapaId ? 'Descrição da etapa' : 'Nova etapa'} value={novaEtapa.descricao} onChange={(e) => setNovaEtapa((f) => ({ ...f, descricao: e.target.value }))} />
             <input className="control" placeholder="cód. EAP" style={{ width: 90 }} value={novaEtapa.codigoEap} onChange={(e) => setNovaEtapa((f) => ({ ...f, codigoEap: e.target.value }))} />
-            <button className="btn btn-secondary btn-sm" onClick={addEtapa}>+</button>
+            <button className="btn btn-secondary btn-sm" onClick={salvarEtapa} disabled={!novaEtapa.descricao.trim()}>{editEtapaId ? 'Salvar' : '+'}</button>
+            {editEtapaId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={cancelarEtapa}>✕</button>}
           </div>
         </div>
 
@@ -176,10 +211,13 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
               </tr></thead>
               <tbody>
                 {itens.map((i) => (
-                  <tr key={i.id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <tr key={i.id} style={{ borderTop: '1px solid var(--border)', background: editItemId === i.id ? 'var(--bg-subtle)' : 'transparent' }}>
                     <td>{i.descricao || '—'}</td><td>{i.unidade || '—'}</td><td>{i.quantidade}</td>
                     <td>{brl(i.custoUnitario)}</td><td>{brl(i.custoTotal)}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => acao(async () => { await api.delItem(i.id); await recarregarEtapa(sel); await recarregar() })}>×</button></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-ghost btn-sm" title="Editar" onClick={() => editarItem(i)}>✎</button>
+                      <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => acao(async () => { await api.delItem(i.id); if (editItemId === i.id) cancelarItem(); await recarregarEtapa(sel); await recarregar() })}>×</button>
+                    </td>
                   </tr>
                 ))}
                 {itens.length === 0 && <tr><td colSpan="6" className="empty">Sem itens.</td></tr>}
@@ -187,12 +225,15 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
             </table>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 60px 80px auto', gap: 4, marginTop: 6 }}>
               <select className="control" value={novoItem.servicoRefId} onChange={(e) => escolherServico(e.target.value)}>
-                <option value="">serviço…</option>{servicos.map((s) => <option key={s.id} value={s.id}>{s.descricao}</option>)}
+                <option value="">{novoItem.descricao ? novoItem.descricao : 'serviço…'}</option>{servicos.map((s) => <option key={s.id} value={s.id}>{s.descricao}</option>)}
               </select>
               <input className="control" placeholder="un." value={novoItem.unidade} onChange={(e) => setNovoItem((f) => ({ ...f, unidade: e.target.value }))} />
               <input className="control" type="number" placeholder="qtd" value={novoItem.quantidade} onChange={(e) => setNovoItem((f) => ({ ...f, quantidade: e.target.value }))} />
               <input className="control" type="number" placeholder="R$/un" value={novoItem.custoUnitario} onChange={(e) => setNovoItem((f) => ({ ...f, custoUnitario: e.target.value }))} />
-              <button className="btn btn-secondary btn-sm" onClick={addItem} disabled={!(Number(novoItem.quantidade) > 0 && Number(novoItem.custoUnitario) > 0)}>+</button>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className="btn btn-secondary btn-sm" onClick={salvarItem} disabled={!(Number(novoItem.quantidade) > 0 && Number(novoItem.custoUnitario) > 0)}>{editItemId ? 'Salvar' : '+'}</button>
+                {editItemId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={cancelarItem}>✕</button>}
+              </div>
             </div>
           </div>
 
@@ -204,9 +245,12 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
               </tr></thead>
               <tbody>
                 {realizados.map((r) => (
-                  <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <tr key={r.id} style={{ borderTop: '1px solid var(--border)', background: editRealId === r.id ? 'var(--bg-subtle)' : 'transparent' }}>
                     <td>{r.competencia}</td><td>{brl(r.valor)}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => acao(async () => { await api.delRealizado(r.id); await recarregarEtapa(sel); await recarregar() })}>×</button></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-ghost btn-sm" title="Editar" onClick={() => editarReal(r)}>✎</button>
+                      <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => acao(async () => { await api.delRealizado(r.id); if (editRealId === r.id) cancelarReal(); await recarregarEtapa(sel); await recarregar() })}>×</button>
+                    </td>
                   </tr>
                 ))}
                 {realizados.length === 0 && <tr><td colSpan="3" className="empty">Sem lançamentos.</td></tr>}
@@ -215,7 +259,8 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
             <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
               <input className="control" type="date" value={novoReal.competencia} onChange={(e) => setNovoReal((f) => ({ ...f, competencia: e.target.value }))} />
               <input className="control" type="number" placeholder="valor R$" value={novoReal.valor} onChange={(e) => setNovoReal((f) => ({ ...f, valor: e.target.value }))} />
-              <button className="btn btn-secondary btn-sm" onClick={addReal} disabled={!(novoReal.competencia && Number(novoReal.valor) > 0)}>+</button>
+              <button className="btn btn-secondary btn-sm" onClick={salvarReal} disabled={!(novoReal.competencia && Number(novoReal.valor) > 0)}>{editRealId ? 'Salvar' : '+'}</button>
+              {editRealId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={cancelarReal}>✕</button>}
             </div>
           </div>
         </div>

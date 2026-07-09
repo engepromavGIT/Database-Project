@@ -69,6 +69,19 @@ export function registrarObraDetalhe(app) {
     res.json({ ok: true })
   }))
 
+  // Edita descrição/código EAP da etapa (correção do dia-a-dia → requireAuth). Os custos
+  // da etapa são derivados dos itens/realizados, então a edição aqui não os altera.
+  app.put('/api/etapas/:id', requireAuth, wrap(async (req, res) => {
+    const { descricao, codigoEap = null } = req.body || {}
+    if (!descricao || !descricao.trim()) return res.status(400).json({ error: 'Informe a descrição da etapa.' })
+    const upd = await q(
+      'UPDATE orcamento.etapas SET descricao = $2, codigo_eap = $3 WHERE id = $1 RETURNING id',
+      [req.params.id, descricao.trim(), codigoEap || null])
+    if (!upd.length) return res.status(404).json({ error: 'Etapa não encontrada.' })
+    await registrarLog(req, 'update', 'etapa', req.params.id)
+    res.json({ id: req.params.id })
+  }))
+
   // ----- Itens de custo (orçado) -----
   app.get('/api/etapas/:id/itens', requireAuth, wrap(async (req, res) => {
     res.json(await q(
@@ -101,6 +114,25 @@ export function registrarObraDetalhe(app) {
     res.json({ ok: true })
   }))
 
+  // Edita um item de custo. quantidade/custo mudam o total → recalcula os agregados.
+  app.put('/api/itens/:id', requireAuth, wrap(async (req, res) => {
+    const { descricao = null, unidade = null, quantidade = 0, custoUnitario = 0, servicoRefId = null, categoriaId = null } = req.body || {}
+    if (!(Number(quantidade) > 0) || !(Number(custoUnitario) > 0)) {
+      return res.status(400).json({ error: 'Informe quantidade e custo unitário.' })
+    }
+    const [it] = await q('SELECT etapa_id FROM orcamento.itens_custo WHERE id = $1', [req.params.id])
+    if (!it) return res.status(404).json({ error: 'Item não encontrado.' })
+    await q(
+      `UPDATE orcamento.itens_custo
+         SET descricao = $2, unidade = $3, quantidade = $4, custo_unitario = $5, servico_ref_id = $6, categoria_id = $7
+       WHERE id = $1`,
+      [req.params.id, descricao, unidade, Number(quantidade), Number(custoUnitario), servicoRefId, categoriaId])
+    const obraId = await etapaObraId(it.etapa_id)
+    if (obraId) await recalcularObra(obraId)
+    await registrarLog(req, 'update', 'item', req.params.id)
+    res.json({ id: req.params.id })
+  }))
+
   // ----- Custos realizados -----
   app.get('/api/etapas/:id/realizados', requireAuth, wrap(async (req, res) => {
     res.json(await q(
@@ -128,6 +160,23 @@ export function registrarObraDetalhe(app) {
     if (r) { const obraId = await etapaObraId(r.etapa_id); if (obraId) await recalcularObra(obraId) }
     if (del.length) await registrarLog(req, 'delete', 'realizado', req.params.id)
     res.json({ ok: true })
+  }))
+
+  // Edita um lançamento de custo realizado (competência/valor). Recalcula os agregados.
+  // NÃO mexe em 'origem' (proveniência: manual/importado/conciliado) — não há edição dela
+  // na UI e o front não a envia; incluí-la no UPDATE a zeraria. Preservada, como o
+  // data_base fica de fora do UPDATE do item.
+  app.put('/api/realizados/:id', requireAuth, wrap(async (req, res) => {
+    const { competencia = null, valor = 0 } = req.body || {}
+    if (!competencia || !(Number(valor) > 0)) return res.status(400).json({ error: 'Informe competência e valor.' })
+    const [r] = await q('SELECT etapa_id FROM orcamento.custos_realizados WHERE id = $1', [req.params.id])
+    if (!r) return res.status(404).json({ error: 'Lançamento não encontrado.' })
+    await q('UPDATE orcamento.custos_realizados SET competencia = $2, valor = $3 WHERE id = $1',
+      [req.params.id, competencia, Number(valor)])
+    const obraId = await etapaObraId(r.etapa_id)
+    if (obraId) await recalcularObra(obraId)
+    await registrarLog(req, 'update', 'realizado', req.params.id)
+    res.json({ id: req.params.id })
   }))
 
   // ----- Curva ABC da obra (RF-D04) -----

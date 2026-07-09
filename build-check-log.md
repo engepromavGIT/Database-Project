@@ -555,6 +555,46 @@ execução não há duplicatas, então re-rodar é no-op.
 
 ---
 
+## Atualização 2026-07-09 — rotas de UPDATE inline (etapa/item/realizado)
+
+Follow-up do review de RBAC: sem rota de edição, corrigir um lançamento era excluir+recriar.
+Agora há edição de verdade.
+
+**Backend (server/obraDetalhe.js):** `PUT /api/etapas/:id` (descrição/código EAP; não toca
+custos, que são derivados), `PUT /api/itens/:id` (descrição/unidade/qtd/custo/serviço/categoria
++ `recalcularObra`), `PUT /api/realizados/:id` (competência/valor + `recalcularObra`). Todos
+`requireAuth` (abertos — correção do dia-a-dia), 404 se não existir, `registrarLog('update')`.
+**Frontend (ObraDetalhe.jsx):** cada form de adicionar também **edita** — ✎ por linha carrega
+a linha no form (vira "Salvar" + ✕ cancelar), mesmo padrão do form de obra/cliente. `api.js`:
+`updEtapa/updItem/updRealizado`.
+
+### Revisão adversarial (workflow, 2 lentes) — 1 achado real, corrigido
+| Achado (sev) | Correção |
+|--------------|----------|
+| `PUT /realizados/:id` **zerava `origem`** (proveniência) em toda edição — o front não envia o campo, mas o UPDATE o incluía. Latente hoje (nada in-app grava `origem`), mas um realizado criado via POST/import perderia a proveniência ao ser editado. | `origem` saiu do UPDATE (preservada), igual ao `data_base` que já ficava de fora do PUT de item. |
+
+> A lente de front deu limpa: o `useEffect [sel]` que chama `cancelarItem/cancelarReal` funciona
+> (o efeito roda após o render, quando as `const` já existem); trocar de etapa/excluir a linha em
+> edição limpa o estado; e a descrição de item de texto-livre é preservada no round-trip.
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 27 módulos |
+| PUT live (servidor real :3010) | ✅ 13/13: edição por usuário regular, **recálculo dos totais** (item 1000→2000, realizado 500→800), 404s, auditoria |
+| fix do `origem` (live) | ✅ editar o valor preserva `origem='importado'` (antes zerava) |
+| UI inline (stub) | ✅ ✎ pré-preenche → Salvar recalcula e atualiza a linha → form volta a "adicionar"; prefill/cancelar da etapa; console limpo |
+
+### Para o Cowork
+> Edição inline de etapa/item/realizado no ar (PUT abertos a autenticados; excluir obra segue
+> admin-only). Editar qtd/custo de um item recalcula os totais da obra. Um review pegou que o PUT
+> de realizado zerava `origem` (proveniência) — corrigido tirando-a do UPDATE. Com isso, as
+> exclusões de linha poderiam voltar a ser mais restritas se quiserem, já que agora há como editar
+> sem apagar — mas mantive abertas (o modelo atual). Follow-ups que restam são só os bloqueados por
+> dados externos (série SINAPI real, PDFs para robustez do parser, anexo de 38 MB do MAPP-6219).
+
+---
+
 ## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
 
 O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a

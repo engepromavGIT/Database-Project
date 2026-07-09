@@ -74,12 +74,15 @@ export const api = {
   // ----- detalhamento de obra (EAP / itens / realizados / ABC) -----
   obraEtapas: (obraId) => req('GET', `/obras/${obraId}/etapas`),
   addEtapa: (obraId, data) => req('POST', `/obras/${obraId}/etapas`, data),
+  updEtapa: (id, data) => req('PUT', `/etapas/${id}`, data),
   delEtapa: (id) => req('DELETE', `/etapas/${id}`),
   etapaItens: (etapaId) => req('GET', `/etapas/${etapaId}/itens`),
   addItem: (etapaId, data) => req('POST', `/etapas/${etapaId}/itens`, data),
+  updItem: (id, data) => req('PUT', `/itens/${id}`, data),
   delItem: (id) => req('DELETE', `/itens/${id}`),
   etapaRealizados: (etapaId) => req('GET', `/etapas/${etapaId}/realizados`),
   addRealizado: (etapaId, data) => req('POST', `/etapas/${etapaId}/realizados`, data),
+  updRealizado: (id, data) => req('PUT', `/realizados/${id}`, data),
   delRealizado: (id) => req('DELETE', `/realizados/${id}`),
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
 
