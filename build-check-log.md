@@ -396,6 +396,59 @@ DEFAULT 0), então mostrava "R$ 0,00". Agora: `Number(custoRealTotal) > 0 ? brl(
 
 ---
 
+## Atualização 2026-07-09 — RBAC + trilha de auditoria (RF-H02 / RF-B08 / RF-H05)
+
+Depois da auditoria de pendências (workflow), o usuário escolheu a frente **RBAC +
+auditoria**. Implementado e revisado adversarialmente (2º workflow) antes de commitar.
+
+**Modelo de permissão (decisão de design):** o papel (`is_admin`) é resolvido POR REQUEST
+em `public.users` — nunca via claim do token, porque os tokens são compartilhados com o
+app Promav (assinam só `{ sub }`). Admin-only = **consulta da trilha de auditoria**
+(RF-H05) e, no futuro, CRUD de cadastros de referência/usuários (doc 01 §4). Create/update
+E as exclusões de linha (etapa/item/realizado) ficam abertas a qualquer autenticado — são
+correção do dia-a-dia (não há rota de edição; corrigir = excluir+recriar), e a trilha de
+auditoria dá o rastro.
+
+**Backend:** `requireAdmin` + `registrarLog` (best-effort) em `server/auth.js`; `GET
+/api/auditoria` (admin) em `index.js`; `registrarLog` em todos os pontos sensíveis
+(criar obra/etapa/item/realizado, estimativa, calibração, export PDF, importação, exclusões).
+**Frontend:** aba **Auditoria** só para admin (`src/screens/Auditoria.jsx` novo), método
+`api.auditoria`.
+
+### Revisão adversarial (workflow, 3 lentes → verificação) — 6 achados, TODOS corrigidos
+| # | Achado | Correção |
+|---|--------|----------|
+| 1 (média) | **Regressão:** gatear as exclusões de linha como admin-only quebrava a correção do dia-a-dia (não há UPDATE; corrigir = excluir+recriar). | Exclusões voltaram a `requireAuth` (abertas); admin-only ficou só na consulta de auditoria. Botões × voltam a aparecer p/ todos. |
+| 2 | Auditoria best-effort engolia falhas em silêncio. | Erro agora logado COM contexto (acao/entidade/id/usuario) + guard no boot avisando se `log_auditoria` não existe na branch. |
+| 3/4 | `GET /api/auditoria?limite=-1` → `LIMIT -1` → 500. | Clamp: `Number.isFinite(n) && n>0 ? min(n,500) : 100` (+ `floor`, trata decimais). |
+| 5 | Excluir id inexistente gravava log fantasma. | `DELETE … RETURNING id`; só loga se `del.length`. |
+| 6 | `Auditoria.jsx` mostrava "nenhuma ação" junto do banner de erro. | Estados erro/vazio agora mutuamente exclusivos. |
+
+> A lente de **bypass de RBAC deu limpa**: só rotas gated tocam `DELETE`, `req.userId`
+> não é forjável após `requireAuth`, o caminho de erro é fail-closed, e usuário inexistente
+> → nega. Sem escalonamento de privilégio.
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| npm run check / test / build | ✅ 79/79 · build 26 módulos |
+| RBAC live (servidor real :3010, tokens mintados) | ✅ 9/9 pós-fix: audit view admin-only (403 p/ user), user regular cria E exclui própria linha (200), limite=-1 → 200, delete real loga (usuario u2), sem log fantasma, create loga. Antes do fix, 11/11 confirmaram o design original. |
+| UI (stub, 2 papéis) | ✅ admin vê aba Auditoria + tabela renderiza; não-admin não vê a aba. |
+| Limpeza | ✅ obra/logs de teste removidos da branch dev; scripts de teste apagados. |
+
+### Para o Cowork
+> RBAC + auditoria no ar. **Atenção ao modelo:** admin-only hoje = só a CONSULTA da trilha;
+> a infra (`requireAdmin`, papel por request) está pronta para gatear o CRUD de cadastros de
+> referência/índices/usuários quando existir. Um review adversarial pegou uma regressão minha
+> (eu tinha fechado as exclusões de linha para admin, o que travaria a correção de lançamentos
+> dos orçamentistas — não há edição, só excluir+recriar); revertido. **Follow-up recomendado:**
+> adicionar rotas de UPDATE (PUT) p/ etapa/item/realizado + edição inline — aí as exclusões
+> poderiam voltar a ser mais restritas sem travar ninguém. A auditoria é best-effort por
+> design (não derruba a operação); se quiserem não-repúdio forte nas exclusões, gravar o log
+> na mesma transação (precisa de um helper de transação no `db.js`).
+
+---
+
 ## Atualização 2026-07-08 — migrations 006–008 aplicadas na branch dev (último follow-up)
 
 O usuário criou o `.env` nesta máquina. **Atenção — quase-acidente evitado:** a

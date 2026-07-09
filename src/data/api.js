@@ -76,6 +76,9 @@ export const api = {
   delRealizado: (id) => req('DELETE', `/realizados/${id}`),
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
 
+  // ----- auditoria (RF-B08 / RF-H05) — restrito a admin -----
+  auditoria: (limite = 100) => req('GET', `/auditoria?limite=${limite}`),
+
   // ----- anexos (RF-B06 / US-18) -----
   obraAnexos: (obraId) => req('GET', `/obras/${obraId}/anexos`),
   // URL de download direto (<a href>); o requireAuth do servidor aceita ?token=.

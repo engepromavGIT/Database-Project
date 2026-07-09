@@ -9,7 +9,7 @@ import express from 'express'
 import cors from 'cors'
 import * as XLSX from 'xlsx'
 import { q } from './db.js'
-import { requireAuth, signToken, verifyPassword } from './auth.js'
+import { requireAuth, requireAdmin, registrarLog, signToken, verifyPassword } from './auth.js'
 import { fatorAtualizacao, custoM2, ajusteRegional } from './estimativa/normalizacao.js'
 import { escoreSimilaridade } from './estimativa/similaridade.js'
 import {
@@ -228,6 +228,21 @@ app.get('/api/integracao/estimativas/:id', requireApiKey, wrap(async (req, res) 
 app.use('/api', requireAuth)
 
 // ============================================================
+// RF-B08 / RF-H05 — Trilha de auditoria (consulta restrita a admin)
+// ============================================================
+app.get('/api/auditoria', requireAdmin, wrap(async (req, res) => {
+  const n = Math.floor(Number(req.query.limite))
+  const limite = Number.isFinite(n) && n > 0 ? Math.min(n, 500) : 100
+  res.json(await q(`
+    SELECT l.id, l.entidade, l.entidade_id AS "entidadeId", l.acao,
+           to_char(l.data_hora, 'YYYY-MM-DD"T"HH24:MI:SS') AS "dataHora",
+           l.usuario_id AS "usuarioId", u.name AS "usuarioNome"
+    FROM orcamento.log_auditoria l
+    LEFT JOIN public.users u ON u.id = l.usuario_id
+    ORDER BY l.data_hora DESC LIMIT $1`, [limite]))
+}))
+
+// ============================================================
 // Cadastros de referência
 // ============================================================
 app.get('/api/tipos-obra', wrap(async (_req, res) => {
@@ -297,6 +312,7 @@ app.post('/api/obras', wrap(async (req, res) => {
       custoRealTotal, custoOrcadoTotal, req.userId],
   )
   const [obra] = await q(`${OBRA_LIST} WHERE o.id = $1`, [id])
+  await registrarLog(req, 'create', 'obra', id)
   res.status(201).json(obra)
 }))
 
@@ -421,6 +437,7 @@ app.post('/api/estimativas', wrap(async (req, res) => {
       )
     }
     const preco = bu.esperado != null ? round2(bu.esperado * (1 + (Number(bdiPct) || 0) / 100)) : null
+    await registrarLog(req, 'estimate', 'estimativa', id)
     return res.status(201).json({
       id, descricao, metodo: 'bottom_up', alvo, grupo, versao,
       custoDireto: round2(custoDireto),
@@ -466,6 +483,7 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     )
   }
   const preco = custo.esperado != null ? round2(custo.esperado * (1 + (Number(bdiPct) || 0) / 100)) : null
+  await registrarLog(req, 'estimate', 'estimativa', id)
   res.status(201).json({
     id, descricao, metodo, alvo, grupo, versao,
     custo: { O: round2(custo.O), M: round2(custo.M), P: round2(custo.P), esperado: round2(custo.esperado) },
@@ -539,6 +557,7 @@ app.get('/api/estimativas/:id/pdf', wrap(async (req, res) => {
   try { ({ default: PDFDocument } = await import('pdfkit')) }
   catch { return res.status(503).json({ error: 'Geração de PDF indisponível (rode npm install para instalar o pdfkit).' }) }
 
+  await registrarLog(req, 'export', 'estimativa', est.id)
   const brl = (v) => (v == null ? '—' : `R$ ${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `inline; filename="estimativa-${est.id}.pdf"`)
@@ -588,6 +607,7 @@ app.post('/api/estimativas/:id/realizado', wrap(async (req, res) => {
   const erro = prov > 0 ? round2(((Number(custoRealizado) - prov) / prov) * 100) : null
   await q('UPDATE orcamento.estimativas SET custo_realizado = $2, erro_pct = $3 WHERE id = $1',
     [req.params.id, custoRealizado, erro])
+  await registrarLog(req, 'update', 'estimativa', req.params.id)
   res.json({ id: req.params.id, custoRealizado: Number(custoRealizado), erroPct: erro })
 }))
 
@@ -634,6 +654,7 @@ app.post('/api/importacao/confirmar', wrap(async (req, res) => {
     )
     inseridas++
   }
+  if (inseridas > 0) await registrarLog(req, 'create', 'importacao', null)
   res.json({ inseridas, total: linhas.length, erros })
 }))
 
@@ -649,5 +670,10 @@ app.use((err, _req, res, _next) => {
 q('SELECT 1 FROM orcamento.obras LIMIT 1')
   .catch(() => console.warn('[base-projetos] schema "orcamento" não encontrado — rode db/migrations/001..004 na sua branch do Neon.'))
   .finally(() => {
+    // Auditoria é best-effort (não derruba operação), então uma tabela ausente passaria
+    // silenciosa. Avisar cedo se a trilha (RF-H05) não puder ser gravada nesta branch.
+    q("SELECT to_regclass('orcamento.log_auditoria') AS t")
+      .then(([r]) => { if (!r || !r.t) console.warn('[base-projetos] AVISO: orcamento.log_auditoria ausente — a trilha de auditoria NÃO será gravada (rode as migrations).') })
+      .catch(() => {})
     app.listen(PORT, () => console.log(`[base-projetos] API em http://localhost:${PORT}`))
   })

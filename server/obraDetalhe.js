@@ -2,7 +2,7 @@
 // e curva ABC. Registra rotas no app. Tudo em orcamento.*; usa tabelas da
 // migration 001. Autenticação por rota (requireAuth).
 import { q } from './db.js'
-import { requireAuth } from './auth.js'
+import { requireAuth, registrarLog } from './auth.js'
 import { curvaABC } from './curvaABC.js'
 
 const genId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -45,13 +45,18 @@ export function registrarObraDetalhe(app) {
       `INSERT INTO orcamento.etapas (id, obra_id, etapa_pai_id, codigo_eap, descricao, ordem)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [id, req.params.id, etapaPaiId, codigoEap, descricao, Number(ordem) || 0])
+    await registrarLog(req, 'create', 'etapa', id)
     res.status(201).json({ id })
   }))
 
+  // Exclui a etapa (CASCADE em itens/realizados). Como não há rota de edição, a
+  // correção de um lançamento é excluir+recriar → fica aberta a qualquer autenticado
+  // (a trilha de auditoria dá o rastro). Só registra o log se algo foi de fato excluído.
   app.delete('/api/etapas/:id', requireAuth, wrap(async (req, res) => {
     const obraId = await etapaObraId(req.params.id)
-    await q('DELETE FROM orcamento.etapas WHERE id = $1', [req.params.id])
+    const del = await q('DELETE FROM orcamento.etapas WHERE id = $1 RETURNING id', [req.params.id])
     if (obraId) await recalcularObra(obraId)
+    if (del.length) await registrarLog(req, 'delete', 'etapa', req.params.id)
     res.json({ ok: true })
   }))
 
@@ -75,13 +80,15 @@ export function registrarObraDetalhe(app) {
       [id, req.params.id, servicoRefId, categoriaId, descricao, unidade, Number(quantidade), Number(custoUnitario)])
     const obraId = await etapaObraId(req.params.id)
     if (obraId) await recalcularObra(obraId)
+    await registrarLog(req, 'create', 'item', id)
     res.status(201).json({ id })
   }))
 
   app.delete('/api/itens/:id', requireAuth, wrap(async (req, res) => {
     const [it] = await q('SELECT etapa_id FROM orcamento.itens_custo WHERE id = $1', [req.params.id])
-    await q('DELETE FROM orcamento.itens_custo WHERE id = $1', [req.params.id])
+    const del = await q('DELETE FROM orcamento.itens_custo WHERE id = $1 RETURNING id', [req.params.id])
     if (it) { const obraId = await etapaObraId(it.etapa_id); if (obraId) await recalcularObra(obraId) }
+    if (del.length) await registrarLog(req, 'delete', 'item', req.params.id)
     res.json({ ok: true })
   }))
 
@@ -102,13 +109,15 @@ export function registrarObraDetalhe(app) {
       [id, req.params.id, competencia, Number(valor), origem])
     const obraId = await etapaObraId(req.params.id)
     if (obraId) await recalcularObra(obraId)
+    await registrarLog(req, 'create', 'realizado', id)
     res.status(201).json({ id })
   }))
 
   app.delete('/api/realizados/:id', requireAuth, wrap(async (req, res) => {
     const [r] = await q('SELECT etapa_id FROM orcamento.custos_realizados WHERE id = $1', [req.params.id])
-    await q('DELETE FROM orcamento.custos_realizados WHERE id = $1', [req.params.id])
+    const del = await q('DELETE FROM orcamento.custos_realizados WHERE id = $1 RETURNING id', [req.params.id])
     if (r) { const obraId = await etapaObraId(r.etapa_id); if (obraId) await recalcularObra(obraId) }
+    if (del.length) await registrarLog(req, 'delete', 'realizado', req.params.id)
     res.json({ ok: true })
   }))
 

@@ -6,6 +6,7 @@ import { Estimativa } from './screens/Estimativa.jsx'
 import { Cenarios } from './screens/Cenarios.jsx'
 import { Comparar } from './screens/Comparar.jsx'
 import { Importar } from './screens/Importar.jsx'
+import { Auditoria } from './screens/Auditoria.jsx'
 
 // ---------------- Login ----------------
 function Login({ onLogin }) {
@@ -65,10 +66,13 @@ const ABAS = [
   ['comparar', 'Comparar', Comparar],
   ['importar', 'Importar', Importar],
 ]
+// Aba restrita a administradores (o endpoint /api/auditoria também exige admin).
+const ABA_ADMIN = ['auditoria', 'Auditoria', Auditoria]
 
 function Shell({ user, onLogout }) {
   const [aba, setAba] = useState('painel')
-  const Tela = (ABAS.find(([id]) => id === aba) || ABAS[0])[2]
+  const abas = user.isAdmin ? [...ABAS, ABA_ADMIN] : ABAS
+  const Tela = (abas.find(([id]) => id === aba) || abas[0])[2]
   return (
     <div style={{ maxWidth: 1060, margin: '0 auto', padding: 'var(--sp-4)' }}>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--sp-4)' }}>
@@ -76,7 +80,7 @@ function Shell({ user, onLogout }) {
           <img src="/assets/promav-mark.svg" alt="" height="28" />
           <strong>Base de Projetos</strong>
           <nav style={{ display: 'flex', gap: 'var(--sp-2)', marginLeft: 'var(--sp-3)' }}>
-            {ABAS.map(([id, rotulo]) => (
+            {abas.map(([id, rotulo]) => (
               <button key={id} className={`btn btn-sm ${aba === id ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setAba(id)}>
                 {rotulo}
               </button>
