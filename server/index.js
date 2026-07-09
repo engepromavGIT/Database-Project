@@ -30,8 +30,11 @@ app.use(express.json({ limit: '10mb' }))
 // preview/hospedagem no processo inteiro (e o Vite já ocupa essa porta em dev).
 const PORT = process.env.API_PORT || process.env.PORT || 3001
 
+// Em produção, sem JWT_SECRET o auth.js cairia num fallback público hardcoded
+// (qualquer um forjaria tokens). Recusar iniciar em vez de só avisar.
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-  console.warn('[base-projetos] AVISO: JWT_SECRET não definido em produção.')
+  console.error('[base-projetos] FATAL: JWT_SECRET não definido em produção — defina um segredo forte no ambiente.')
+  process.exit(1)
 }
 
 // ---------- helpers ----------

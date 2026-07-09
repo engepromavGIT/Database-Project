@@ -10,6 +10,10 @@ dist/
 # Documentos de cliente (PDFs assinados) — ficam só locais
 orcamentos/
 
+# Saídas de scratch/diagnóstico do ETL (contêm nomes/valores de obras reais) — não versionar
+diag*.txt
+dryrun*.txt
+
 __pycache__/
 *.pyc
 .claude/settings.local.json

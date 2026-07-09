@@ -424,3 +424,42 @@ credenciais — branches do Neon herdam as roles), confirmada pela sonda (schema
 > preenchido com um fragmento da senha do banco — funciona para login isolado, mas não é
 > o segredo do app Promav (logins não são compatíveis) e reutiliza credencial do banco;
 > recomendo trocar pelo segredo real do app ou por um aleatório forte.
+
+---
+
+## Atualização 2026-07-09 — auditoria de pendências (workflow multi-agente) + cluster higiene/segurança
+
+Como o handoff estava 100% fechado, rodei um **workflow de descoberta** (4 lentes em
+paralelo — cobertura de requisitos, concerns abertos, higiene/testes, corretude/segurança
+das mudanças recentes → verificação adversarial de cada candidato → síntese priorizada).
+Resultado: **32 pendências confirmadas** (34 achadas, 2 pares mesclados), ranqueadas, em
+4 direções. Detalhe completo no transcript do workflow; abaixo o que **já executei** (o
+topo do ranking: seguro, alto valor, sem depender de dados externos).
+
+### Fixes aplicados neste commit
+
+| # | Fix | Arquivo | Verificação |
+|---|-----|---------|-------------|
+| rank 1 | **Dumps de debug versionados vazavam dados de cliente** (nomes de obra, valores de PMs). `git rm --cached` dos 3 (`diag.txt`, `diag-pb.txt`, `dryrun-pav.txt`) + `.gitignore` (`diag*.txt`, `dryrun*.txt`). Cópias locais mantidas. | `.gitignore` | untrack confirmado; ainda existem localmente; agora ignorados |
+| rank 3 | **Download de anexo dava HTTP 500** com filename contendo caractere > U+00FF (travessão, aspas tipográficas, acentos que o `pg` devolve). `Content-Disposition` agora usa `filename=` ASCII-fold + `filename*=UTF-8''…` (RFC 5987/6266). | `server/obraDetalhe.js:140` | prova em Node real: código antigo → `ERR_INVALID_CHAR`/500; novo → 200 + `filename*` decodifica para o nome original acentuado |
+| rank 2 | **JWT_SECRET**: guard de produção agora é **fatal** (`process.exit(1)`) em vez de só avisar — sem ele o `auth.js` cairia no fallback público hardcoded. Orientação do `.env.example` corrigida (não reusar senha do banco; obrigatório em prod). | `server/index.js:33`, `.env.example:11` | boot em `NODE_ENV=production` sem segredo → FATAL + exit 1, antes do `listen`; em dev, sem efeito (preview segue rodando) |
+
+check OK · 79/79 testes · build OK (25 módulos). **Nota:** o `JWT_SECRET` do `.env`
+local (fragmento da senha do banco) NÃO foi alterado — trocá-lo desloga a sessão atual e
+o valor correto é o segredo real do app Promav, que não tenho aqui; segue como ação do
+usuário.
+
+### Pendências NÃO executadas (aguardam decisão de escopo ou dados)
+- **Cobertura de testes** (ranks 4,5,19): `tests/auth.test.mjs`, pytest do ETL (`url_direta`, partição pooler/direta), testes dos endpoints de anexos. Doável já, sem dados reais.
+- **Fundação de segurança Essencial** (ranks 6,10,11,22): RBAC por perfil (hoje qualquer JWT válido faz tudo), trilha de auditoria (tabela `log_auditoria` existe, nunca é gravada), token de anexo na URL (trocar por fetch+blob), rotação da credencial do Neon.
+- **Histórias de valor Essenciais** (ranks 9,12,13,14,15): export CSV/Excel (quick-win), CRUD de clientes + vínculo à obra, atualização monetária por data-base, busca/filtro de obras, edição/exclusão de obra.
+- **Bloqueados por dados ausentes** (ranks 30,31,32): série oficial SINAPI (fator=1 placeholder), robustez do parser em layouts variados, e o **anexo de 38 MB do MAPP-6219** (precisa da pasta `orcamentos/`).
+
+### Para o Cowork
+> Auditoria completa mapeou 32 pendências verificadas. Fechei o cluster de higiene/segurança
+> de baixo risco (vazamento de dados nos dumps, 500 no download de anexo com nome acentuado,
+> guard fatal do JWT). O resto são decisões de escopo — as maiores são a **fundação de
+> segurança Essencial** (não há RBAC nem auditoria: qualquer usuário autenticado faz tudo e
+> nada deixa rastro) e as **histórias Essenciais ainda abertas** (CRUD de clientes, busca de
+> obras, edição de obra, export CSV, atualização monetária). Recomendo priorizar RBAC+auditoria
+> antes de expor mais a API.

@@ -138,8 +138,13 @@ export function registrarObraDetalhe(app) {
       [req.params.id])
     if (!a) return res.status(404).json({ error: 'Anexo não encontrado.' })
     const nome = (a.filename || 'anexo').replace(/["\r\n]/g, '')
+    // Content-Disposition: o parâmetro filename= só aceita ASCII (o Node lança
+    // ERR_INVALID_CHAR em codepoint > 0xFF). filename*=UTF-8'' carrega o nome real
+    // acentuado (RFC 5987/6266); filename= vira um fallback ASCII p/ navegadores antigos.
+    const asciiNome = nome.replace(/[^\x20-\x7E]/g, '_')
     res.setHeader('Content-Type', a.mimeType || 'application/octet-stream')
-    res.setHeader('Content-Disposition', `attachment; filename="${nome}"`)
+    res.setHeader('Content-Disposition',
+      `attachment; filename="${asciiNome}"; filename*=UTF-8''${encodeURIComponent(nome)}`)
     res.send(a.data)
   }))
 }
