@@ -869,3 +869,44 @@ monetária (mesma tabela).
 > vocês (hoje o seed é placeholder base 100 → fator 1,0); com o CRUD pronto, é só cadastrar os
 > pontos mensais. Follow-ups de código que restam: serviços/composições CRUD (RF-A05), BDI por
 > vigência (RF-A07), cronograma/curva S (RF-B05), dashboard com filtros (RF-G01).
+
+---
+
+## Atualização 2026-07-10 — CRUD de serviços/composições (RF-A05)
+
+O catálogo `orcamento.servicos_ref` (usado pelos selects de item bottom-up na Estimativa e no
+ObraDetalhe, e pela conciliação SINAPI) era só-leitura. Agora tem CRUD **admin-only**.
+
+**Modelo:** igual a Clientes — serviços são referenciados por FK (`itens_custo.servico_ref_id`,
+`estimativa_itens.servico_ref_id`) e têm coluna `ativo`, então **"excluir" = inativar** (PUT
+ativo=false), preservando os itens/estimativas históricos. Sem DELETE físico.
+
+**Backend (`server/index.js`):** `GET /api/servicos` estendido — **retrocompatível** (sem params
+= só ativos, como antes; os consumidores existentes não mudam), com `?todos=1` (inclui inativos)
+e `?busca=` (ILIKE em descrição/código, curingas escapados). Campo `ativo` agora no retorno
+(aditivo). POST/PUT **admin-only**: descrição+unidade obrigatórios, código SINAPI e categoria
+opcionais; `ativo` ausente no PUT → preserva (editar não reativa; `COALESCE`); categoria inválida
+→ 400 (FK no handler global). Auditoria (entidade `servico`).
+**Frontend:** `api.servicos(opts)` (retrocompatível: `api.servicos()` → só ativos) +
+`createServico`/`updServico`; nova aba admin **Serviços** (`src/screens/Servicos.jsx`) espelhando
+Clientes — form (descrição/unidade/código/categoria) + lista com busca (debounced), "incluir
+inativos" e botão Inativar/Ativar. Registrada em `ABAS_ADMIN` (`src/App.jsx`).
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 30 módulos |
+| CRUD live (servidor real :3010, u1 admin / u2 regular) | ✅ **17/17**: leitura aberta (default só ativos, shape com `ativo`); escrita 403 p/ regular; validações (sem descrição/unidade → 400, categoria FK inválida → 400); 201; busca; PUT edita preservando ativo; inativar (some do default, aparece em `?todos=1`); editar inativo **não reativa**; reativar; 403/404; auditoria |
+| UI ao vivo (branch dev, token admin) | ✅ aba Serviços; add (5→6, categoria/ativo OK); inativar (6→5); "incluir inativos" mostra o inativo com "Ativar"; busca (debounced) → 1; reativar; editar (unidade, prefill, volta a "Novo serviço"); console limpo; seeds intactos |
+| Regressão | ✅ selects de serviço na Estimativa/ObraDetalhe usam `api.servicos()` sem params → comportamento idêntico (só ativos) |
+| Limpeza | ✅ serviço + logs de teste removidos da branch dev; scripts apagados |
+
+### Para o Cowork
+> CRUD de serviços/composições no ar (admin-only). Modelei como Clientes (**inativar em vez de
+> apagar**, porque itens/estimativas referenciam o serviço por FK) — a aba tem busca e toggle de
+> inativos. O `GET /api/servicos` ficou **retrocompatível**: sem params continua só-ativos, então
+> os selects de estimativa/item não mudaram; só adicionei `?todos=1`, `?busca=` e o campo `ativo`
+> no retorno. **Atenção operacional:** o `node server/index.js` do `npm run dev` não faz
+> hot-reload — ao puxar estas mudanças, reiniciem o dev server pra API servir o novo código (o
+> Vite recarrega só o front). Com A05 o **módulo A** fica quase completo; resta BDI por vigência
+> (RF-A07). Próximos de código: RF-A07, cronograma/curva S (RF-B05), dashboard com filtros (RF-G01).
