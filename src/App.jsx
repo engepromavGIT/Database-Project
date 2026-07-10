@@ -8,6 +8,7 @@ import { Comparar } from './screens/Comparar.jsx'
 import { Importar } from './screens/Importar.jsx'
 import { Clientes } from './screens/Clientes.jsx'
 import { Cadastros } from './screens/Cadastros.jsx'
+import { Servicos } from './screens/Servicos.jsx'
 import { Auditoria } from './screens/Auditoria.jsx'
 
 // ---------------- Login ----------------
@@ -72,6 +73,7 @@ const ABAS = [
 // Abas restritas a administradores (as rotas de escrita/consulta também exigem requireAdmin).
 const ABAS_ADMIN = [
   ['cadastros', 'Cadastros', Cadastros],
+  ['servicos', 'Serviços', Servicos],
   ['auditoria', 'Auditoria', Auditoria],
 ]
 

@@ -55,7 +55,17 @@ export const api = {
   padroes: () => req('GET', '/padroes'),
   categorias: () => req('GET', '/categorias'),
   localidades: () => req('GET', '/localidades'),
-  servicos: () => req('GET', '/servicos'),
+  // servicos() sem args → só ativos (consumido pelos selects de estimativa/item).
+  // opts { todos, busca } servem a tela de gestão (RF-A05).
+  servicos: (opts) => {
+    const p = new URLSearchParams()
+    if (opts?.todos) p.set('todos', '1')
+    if (opts?.busca) p.set('busca', opts.busca)
+    const qs = p.toString()
+    return req('GET', `/servicos${qs ? `?${qs}` : ''}`)
+  },
+  createServico: (data) => req('POST', '/servicos', data),
+  updServico: (id, data) => req('PUT', `/servicos/${id}`, data),
 
   // ----- clientes (RF-A01 / US-08) -----
   clientes: (todos) => req('GET', `/clientes${todos ? '?todos=1' : ''}`),

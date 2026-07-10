@@ -259,8 +259,23 @@ app.get('/api/categorias', wrap(async (_req, res) => {
 app.get('/api/localidades', wrap(async (_req, res) => {
   res.json(await q('SELECT id, municipio, uf, fator_regional AS "fatorRegional" FROM orcamento.localidades ORDER BY uf, municipio'))
 }))
-app.get('/api/servicos', wrap(async (_req, res) => {
-  res.json(await q('SELECT id, codigo_sinapi AS "codigoSinapi", descricao, unidade, categoria_id AS "categoriaId" FROM orcamento.servicos_ref WHERE ativo = true ORDER BY descricao'))
+// Serviços/composições de referência (RF-A05). Leitura ABERTA (selects de estimativa/itens
+// bottom-up e conciliação): default só ativos; ?todos=1 inclui inativos; ?busca= filtra
+// descrição/código. Escrita restrita a admin (POST/PUT abaixo). "Excluir" = inativar (PUT
+// ativo=false), pois itens_custo/estimativa_itens referenciam o serviço (FK) — como clientes.
+app.get('/api/servicos', wrap(async (req, res) => {
+  const cond = []
+  const params = []
+  if (req.query.todos !== '1') cond.push('ativo = true')
+  const busca = typeof req.query.busca === 'string' ? req.query.busca.trim() : ''
+  if (busca) {
+    params.push(`%${busca.replace(/[\\%_]/g, '\\$&')}%`)
+    cond.push(`(descricao ILIKE $${params.length} OR codigo_sinapi ILIKE $${params.length})`)
+  }
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : ''
+  res.json(await q(
+    `SELECT id, codigo_sinapi AS "codigoSinapi", descricao, unidade, categoria_id AS "categoriaId", ativo
+     FROM orcamento.servicos_ref ${where} ORDER BY descricao`, params))
 }))
 
 // ----- Clientes (RF-A01 / US-08): CRUD. GET default só ativos; ?todos=1 traz inativos.
@@ -451,6 +466,41 @@ app.delete('/api/indices-economicos/:id', requireAdmin, wrap(async (req, res) =>
   if (!del.length) return res.status(404).json({ error: 'Ponto de índice não encontrado.' })
   await registrarLog(req, 'delete', 'indice', req.params.id)
   res.json({ ok: true })
+}))
+
+// ----- Serviços/composições (RF-A05): escrita admin. GET aberto acima. Sem DELETE físico —
+// inativar (PUT ativo=false) preserva os itens/estimativas históricos que referenciam o serviço.
+function servicoCampos(body = {}) {
+  return {
+    codigoSinapi: asStr(body.codigoSinapi) || null,
+    descricao: asStr(body.descricao),
+    unidade: asStr(body.unidade),
+    categoriaId: body.categoriaId || null,
+  }
+}
+const servicoValido = (c) => !!c.descricao && !!c.unidade
+const ERRO_SERVICO = 'Informe descrição e unidade do serviço.'
+app.post('/api/servicos', requireAdmin, wrap(async (req, res) => {
+  const c = servicoCampos(req.body)
+  if (!servicoValido(c)) return res.status(400).json({ error: ERRO_SERVICO })
+  const id = genId('srv')
+  await q('INSERT INTO orcamento.servicos_ref (id, codigo_sinapi, descricao, unidade, categoria_id, ativo) VALUES ($1,$2,$3,$4,$5,true)',
+    [id, c.codigoSinapi, c.descricao, c.unidade, c.categoriaId])
+  await registrarLog(req, 'create', 'servico', id)
+  res.status(201).json({ id, ...c, ativo: true })
+}))
+app.put('/api/servicos/:id', requireAdmin, wrap(async (req, res) => {
+  const c = servicoCampos(req.body)
+  if (!servicoValido(c)) return res.status(400).json({ error: ERRO_SERVICO })
+  // ativo ausente → preserva (editar metadados não reativa; ativar/inativar é o botão da lista).
+  const ativoParam = typeof req.body?.ativo === 'boolean' ? req.body.ativo : null
+  const upd = await q(
+    `UPDATE orcamento.servicos_ref SET codigo_sinapi=$2, descricao=$3, unidade=$4, categoria_id=$5, ativo=COALESCE($6, ativo)
+     WHERE id=$1 RETURNING id, codigo_sinapi AS "codigoSinapi", descricao, unidade, categoria_id AS "categoriaId", ativo`,
+    [req.params.id, c.codigoSinapi, c.descricao, c.unidade, c.categoriaId, ativoParam])
+  if (!upd.length) return res.status(404).json({ error: 'Serviço não encontrado.' })
+  await registrarLog(req, 'update', 'servico', req.params.id)
+  res.json(upd[0])
 }))
 
 // ============================================================
