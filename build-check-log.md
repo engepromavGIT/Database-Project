@@ -790,7 +790,7 @@ tabela histórico/atualizado + nota do fator ou "sem índice").
 Começou verificando o handoff de 08/07 (Acervo + anexos) e, com ele fechado, rodou uma
 **auditoria de pendências** (workflow multi-agente: 4 lentes → verificação adversarial →
 síntese) que confirmou **32 pendências**. A partir daí o usuário escolheu as frentes e elas
-foram implementadas uma a uma. **13 frentes de código** (+ commits de log), todas verificadas.
+foram implementadas uma a uma. **14 frentes de código** (+ commits de log), todas verificadas.
 
 ### Commits (base `9d5c080`)
 | Commit | Entrega |
@@ -808,6 +808,7 @@ foram implementadas uma a uma. **13 frentes de código** (+ commits de log), tod
 | `d71ca6d` | **Edição inline** de etapa/item/realizado (PUT + UI) |
 | `86c0efd` | **Busca/filtro de obras** (RF-E01) + **export CSV** (RF-G03) |
 | `bf9e93f` | **CRUD de cadastros de referência** (tipos, padrões, categorias, localidades) + migration 010 |
+| `74795bd` | **Atualização monetária exposta** (RF-D01): `GET /api/obras/:id/atualizacao` + painel no ObraDetalhe |
 
 ### Estado ao fim da sessão
 - **Ambiente local:** Node v24.18.0 e Python 3.13.14 instalados via winget (a máquina não tinha nenhum). `.env` da branch dev criado — **corrigido de produção → dev** (`ep-restless-dawn-af2pfvm7`); a connection string que circulou era a de prod.
@@ -820,7 +821,7 @@ foram implementadas uma a uma. **13 frentes de código** (+ commits de log), tod
 Cada frente grande seguiu: implementação → **verificação live** no servidor real (`:3010`, tokens mintados, dados de teste sempre limpos) → **revisão adversarial por workflow** antes do commit. Os reviews pegaram e corrigiram bugs/regressões reais que os testes não pegavam, p.ex.: exclusão de linha admin-only travando a correção do dia-a-dia; excluir obra referenciada por estimativa dando 500; reativação silenciosa de cliente inativo; `PUT` de realizado zerando `origem`; `ORDER BY` burlado por chave de protótipo (`?ordenar=constructor`); CSV formula-injection; fator regional estourando `numeric(6,4)`.
 
 ### Pendente
-**Dá para fazer agora (código):** serviços/composições CRUD (RF-A05); BDI por vigência no motor (RF-A07); cronograma/curva S (RF-B05); atualização monetária exposta (RF-D01); dashboard com filtros (RF-G01); reimportação idempotente (RF-C04).
+**Dá para fazer agora (código):** **CRUD de índices econômicos (RF-A06)** — companheiro da atualização monetária, popula a série (o valor real hoje é placeholder); serviços/composições CRUD (RF-A05); BDI por vigência no motor (RF-A07); cronograma/curva S (RF-B05); dashboard com filtros (RF-G01); reimportação idempotente (RF-C04).
 **Bloqueado por dados que NÃO estão nesta máquina:**
 - **Série oficial SINAPI** (hoje placeholder de fator 1): o CRUD/tela dá para fazer; carregar a série real, não.
 - **Robustez do parser** em layouts variados de PDF: precisa dos orçamentos reais.
