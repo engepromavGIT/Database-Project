@@ -830,3 +830,42 @@ Cada frente grande seguiu: implementação → **verificação live** no servido
 ### Ação do usuário recomendada
 - Trocar o `JWT_SECRET` do `.env` local (hoje é um fragmento da senha do banco) pelo **segredo real do app Promav** — sem isso, os logins não são compatíveis com o app principal.
 - Conferir de onde a connection string de **produção** foi copiada, para não repetir o quase-acidente.
+
+---
+
+## Atualização 2026-07-10 — CRUD de índices econômicos (RF-A06)
+
+Companheiro da atualização monetária (RF-D01): a série mensal de índices
+(`orcamento.indices_economicos`) era só-leitura (seed placeholder base 100). Agora tem
+CRUD **admin-only** para popular/manter a série — o valor real destrava quando a série
+oficial (SINAPI/INCC) for carregada por aqui.
+
+**Backend (`server/index.js`):** `GET /api/indices-economicos` (aberto; `?indice=` opcional,
+ordena por índice, ano↓, mês↓) e POST/PUT/DELETE **admin-only**. Validação: índice não-vazio
+(normalizado p/ MAIÚSCULAS), ano 1900–2100 inteiro, mês 1–12 inteiro (bate com o CHECK do
+banco), valor > 0 dentro do `numeric(14,4)`. `UNIQUE(indice, ano, mes)` → **409**; nada
+referencia a tabela por FK (DELETE não trata 23503). Auditoria em create/update/delete
+(entidade `indice`). Handler global ganhou mapeamento de `23514` (CHECK) → 400.
+**Frontend:** `RegistroCRUD` estendido (step/min/max por campo + `fullWidth`); seção
+**Índices econômicos** na aba Cadastros (largura total), mês como select, valor formatado
+pt-BR (até 4 casas). `api.js`: `indicesEconomicos/createIndice/updIndice/delIndice`.
+
+Novos índices criados aqui aparecem automaticamente no seletor `/api/indices` da atualização
+monetária (mesma tabela).
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 29 módulos |
+| CRUD live (servidor real :3010, tokens u1 admin / u2 regular) | ✅ **22/22**: leitura aberta; escrita 403 p/ regular; 201 + uppercase; duplicado 409; validações (mês 13, valor 0, ano 1800, índice vazio/não-string, overflow) → 400; filtro `?indice=`; array de param → 400; PUT 200/409/403/404; DELETE 403/200/404; novo índice em `/indices`; auditoria (4 logs) |
+| UI ao vivo (branch dev, token admin injetado) | ✅ seção full-width renderiza; add (4→5, INCC 2026/05 123,4567), editar (valor→200,00, prefill do mês OK), excluir (5→4); console limpo; os outros 4 cadastros intactos |
+| Limpeza | ✅ pontos + logs de teste removidos da branch dev; scripts de teste apagados |
+
+### Para o Cowork
+> CRUD de índices econômicos no ar (admin-only) — fecha o par com a atualização monetária: dá
+> pra popular a série SINAPI/INCC pela tela de Cadastros, e o seletor da atualização monetária
+> lê a mesma tabela. Verifiquei o backend ao vivo (22/22) e a UI contra a branch dev (add/editar/
+> excluir). **Limitação de dado, não de código:** carregar a *série oficial* real ainda depende de
+> vocês (hoje o seed é placeholder base 100 → fator 1,0); com o CRUD pronto, é só cadastrar os
+> pontos mensais. Follow-ups de código que restam: serviços/composições CRUD (RF-A05), BDI por
+> vigência (RF-A07), cronograma/curva S (RF-B05), dashboard com filtros (RF-G01).
