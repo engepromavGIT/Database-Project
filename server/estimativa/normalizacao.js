@@ -2,9 +2,11 @@
 // Funções puras (sem banco) para serem testáveis.
 
 // Extrai a chave 'YYYY-MM' de uma data ('YYYY-MM-DD', 'YYYY-MM' ou Date).
+// Tipos inesperados (array/objeto vindos da query) → null, sem lançar.
 export function chaveMes(d) {
   if (!d) return null
-  const s = typeof d === 'string' ? d : new Date(d).toISOString()
+  const s = typeof d === 'string' ? d : (d instanceof Date ? d.toISOString() : null)
+  if (!s) return null
   const m = s.match(/(\d{4})-(\d{2})/)
   return m ? `${m[1]}-${m[2]}` : null
 }

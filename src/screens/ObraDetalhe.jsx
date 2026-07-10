@@ -30,6 +30,60 @@ const fmtBytes = (b) => {
 
 const ITEM_VAZIO = { servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '', categoriaId: '' }
 
+// RF-D01 — Atualização monetária: leva os custos da obra a uma data-base alvo via índice.
+function AtualizacaoMonetaria({ obra }) {
+  const [indices, setIndices] = useState([])
+  const [form, setForm] = useState({ indice: 'SINAPI', dataBase: '' })
+  const [resultado, setResultado] = useState(null)
+  const [erro, setErro] = useState(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    api.indices().then((xs) => { setIndices(xs); if (xs[0]) setForm((f) => ({ ...f, indice: xs[0].indice })) }).catch(() => {})
+  }, [])
+  // Ao trocar de obra (mesma instância do componente), descarta o resultado anterior.
+  useEffect(() => { setResultado(null); setErro(null); setForm((f) => ({ ...f, dataBase: '' })) }, [obra.id])
+
+  const atualizar = async () => {
+    if (!form.dataBase) return
+    setBusy(true); setErro(null)
+    try { setResultado(await api.obraAtualizacao(obra.id, form)) }
+    catch (e) { setErro(e.message); setResultado(null) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+      <strong style={{ fontSize: 13 }}>Atualização monetária</strong>
+      <span style={{ color: 'var(--fg-3)', fontSize: 12, marginLeft: 8 }}>data-base da obra: {obra.dataBaseCusto || '—'}</span>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
+        <select className="control" style={{ width: 120 }} value={form.indice} onChange={(e) => setForm((f) => ({ ...f, indice: e.target.value }))}>
+          {indices.length === 0 && <option value="SINAPI">SINAPI</option>}
+          {indices.map((x) => <option key={x.indice} value={x.indice}>{x.indice}</option>)}
+        </select>
+        <input className="control" style={{ width: 150 }} type="month" value={form.dataBase} onChange={(e) => setForm((f) => ({ ...f, dataBase: e.target.value }))} />
+        <button className="btn btn-secondary btn-sm" onClick={atualizar} disabled={busy || !form.dataBase}>Atualizar para esta data-base</button>
+      </div>
+      {erro && <div className="login-error" style={{ marginTop: 6 }}>{erro}</div>}
+      {resultado && (
+        <>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8 }}>
+            <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+              <th>Custo</th><th>Histórico ({resultado.dataBaseOrigem || '—'})</th><th>Atualizado ({resultado.dataBaseAlvo})</th>
+            </tr></thead>
+            <tbody>
+              <tr style={{ borderTop: '1px solid var(--border)' }}><td>Orçado</td><td>{brl(resultado.custoOrcado.historico)}</td><td>{brl(resultado.custoOrcado.atualizado)}</td></tr>
+              <tr style={{ borderTop: '1px solid var(--border)' }}><td>Real</td><td>{brl(resultado.custoReal.historico)}</td><td>{brl(resultado.custoReal.atualizado)}</td></tr>
+            </tbody>
+          </table>
+          {resultado.semIndice
+            ? <div style={{ color: 'var(--prio-medium)', fontSize: 12, marginTop: 4 }}>Sem índice {resultado.indice} para {resultado.dataBaseOrigem || '?'} → {resultado.dataBaseAlvo}: valor mantido (fator 1).</div>
+            : <div style={{ color: 'var(--fg-3)', fontSize: 12, marginTop: 4 }}>Fator {resultado.indice}: {resultado.fator} ({resultado.dataBaseOrigem} → {resultado.dataBaseAlvo})</div>}
+        </>
+      )}
+    </div>
+  )
+}
+
 export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [etapas, setEtapas] = useState([])
   const [servicos, setServicos] = useState([])
@@ -122,6 +176,9 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
         <button className="btn btn-ghost btn-sm" onClick={onClose}>Fechar</button>
       </div>
       {erro && <div className="login-error">{erro}</div>}
+
+      <AtualizacaoMonetaria obra={obra} />
+
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)', marginTop: 'var(--sp-3)' }}>
         {/* Etapas */}

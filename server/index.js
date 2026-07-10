@@ -10,7 +10,7 @@ import cors from 'cors'
 import * as XLSX from 'xlsx'
 import { q } from './db.js'
 import { requireAuth, requireAdmin, registrarLog, signToken, verifyPassword } from './auth.js'
-import { fatorAtualizacao, custoM2, ajusteRegional } from './estimativa/normalizacao.js'
+import { fatorAtualizacao, atualizarValor, chaveMes, custoM2, ajusteRegional } from './estimativa/normalizacao.js'
 import { escoreSimilaridade } from './estimativa/similaridade.js'
 import {
   estimarParametrico, estimarPrazo, estimarPrazoDireto, estimarBottomUp, estatisticaAderencia,
@@ -482,6 +482,43 @@ app.get('/api/obras/:id', wrap(async (req, res) => {
   const [obra] = await q(`${OBRA_LIST} WHERE o.id = $1`, [req.params.id])
   if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
   res.json(obra)
+}))
+
+// Índices econômicos disponíveis (para o seletor da atualização monetária).
+app.get('/api/indices', wrap(async (_req, res) => {
+  res.json(await q('SELECT DISTINCT indice FROM orcamento.indices_economicos ORDER BY indice'))
+}))
+
+// RF-D01 — Atualização monetária: leva os custos da obra da data-base histórica para uma
+// data-base alvo aplicando um índice. Retorna o valor atualizado ao lado do histórico.
+// fator null (semIndice) quando falta ponto do índice em alguma das pontas → mantém o histórico.
+app.get('/api/obras/:id/atualizacao', wrap(async (req, res) => {
+  const [obra] = await q(
+    `SELECT to_char(data_base_custo, 'YYYY-MM') AS "dataBaseOrigem",
+            custo_orcado_total AS "custoOrcado", custo_real_total AS "custoReal"
+     FROM orcamento.obras WHERE id = $1`, [req.params.id])
+  if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+  // Validação de tipo/formato (params repetidos viram array no parser do Express).
+  const dataBaseAlvo = chaveMes(req.query.dataBase)
+  if (!dataBaseAlvo || !/^\d{4}-(0[1-9]|1[0-2])$/.test(dataBaseAlvo)) {
+    return res.status(400).json({ error: 'Informe a data-base alvo no formato AAAA-MM.' })
+  }
+  const indiceRaw = req.query.indice
+  if (indiceRaw != null && typeof indiceRaw !== 'string') return res.status(400).json({ error: 'Índice inválido.' })
+  const indice = indiceRaw || 'SINAPI'
+  const serie = await serieIndice(indice)
+  // Arredonda o fator UMA vez e usa o mesmo valor na resposta e no cálculo (reconciliam).
+  const fatorBruto = fatorAtualizacao(serie, obra.dataBaseOrigem, dataBaseAlvo)
+  const fator = fatorBruto == null ? null : Math.round(fatorBruto * 10000) / 10000
+  const numOrNull = (v) => (v == null ? null : Number(v))
+  const orc = numOrNull(obra.custoOrcado)
+  const real = numOrNull(obra.custoReal)
+  const atualizar = (v) => (v == null ? null : round2(atualizarValor(v, fator ?? 1)))
+  res.json({
+    indice, dataBaseOrigem: obra.dataBaseOrigem, dataBaseAlvo, fator, semIndice: fator == null,
+    custoOrcado: { historico: orc, atualizado: atualizar(orc) },
+    custoReal: { historico: real, atualizado: atualizar(real) },
+  })
 }))
 
 app.post('/api/obras', wrap(async (req, res) => {

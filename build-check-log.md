@@ -740,6 +740,48 @@ por campos; aba **Cadastros** só p/ admin. Migration **010**: `UNIQUE(nome, tip
 
 ---
 
+## Atualização 2026-07-10 — atualização monetária exposta (RF-D01)
+
+O motor de atualização monetária (`fatorAtualizacao`/`serieIndice`) só era usado internamente
+na estimativa. Agora está **exposto por obra**.
+
+**Backend (server/index.js):** `GET /api/indices` (nomes distintos disponíveis) e
+`GET /api/obras/:id/atualizacao?dataBase=AAAA-MM&indice=SINAPI` → leva os custos da obra da
+data-base histórica para a alvo aplicando o índice; retorna histórico × atualizado (orçado e
+real) + fator. `fator` null (falta ponto do índice) → mantém o histórico.
+**Frontend:** painel **Atualização monetária** no ObraDetalhe (select de índice + data-base +
+tabela histórico/atualizado + nota do fator ou "sem índice").
+
+> **Limitação (dado, não código):** a série SINAPI semeada é placeholder (tudo 100), então na
+> dev o fator dá 1,0 ou "sem índice". O valor real aparece quando a série oficial for carregada
+> (RF-A06 — bloqueado por dados; o CRUD de índices seria o companheiro para popular a série).
+
+### Revisão adversarial (workflow, 2 lentes) — 5 achados distintos, TODOS corrigidos
+| # | Achado (sev) | Correção |
+|---|--------------|----------|
+| 1 (média) | `dataBase`/`indice` como **array** (param repetido) → `chaveMes` lançava RangeError / `serieIndice` recebia array → **500**. | validação de tipo na rota (400) + `chaveMes` hardened (não-string → null). |
+| 2 (média) | Painel não resetava o resultado ao **trocar de obra** (valores da obra anterior). | `useEffect [obra.id]` reseta resultado/erro/data-base. |
+| 3 (baixa) | Mês inválido (`2099-13`) passava no regex → "sem índice" silencioso. | regex estrita `AAAA-(01..12)` na rota → 400. |
+| 4 (baixa) | Fator exibido (4 casas) não reconciliava com o `atualizado` (calculado com precisão total). | arredonda o fator uma vez e usa o mesmo nos dois. |
+| 5 (baixa) | `custo_real_total` NULL virava `R$ 0,00` em vez de "—". | preserva NULL (`numOrNull`) → UI mostra "—". |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 30 módulos |
+| endpoint live (servidor real) | ✅ 10/10: com pontos temporários (120/150) fator **1,25**, 1000→1250; semIndice; 400/404 |
+| fixes do review (live) | ✅ 7/7: array→400, mês inválido→400, fator 2,3333 **reconcilia** com o atualizado, custo real NULL→null |
+| UI (stub) | ✅ painel no ObraDetalhe: 442.678,30 → 486.946,13 (fator 1,1); nota semIndice |
+
+### Para o Cowork
+> Atualização monetária exposta (por obra, no ObraDetalhe). Reaproveita o motor que já existia.
+> Na dev o fator é 1,0 porque a série é placeholder — carregar a série SINAPI/INCC real (RF-A06)
+> destrava o valor de verdade; recomendo fazer o CRUD de índices econômicos a seguir para popular a
+> série. O review pegou 5 itens (array de params derrubando com 500, painel não resetando ao trocar
+> de obra, mês inválido, reconciliação do fator, custo NULL) — todos corrigidos.
+
+---
+
 # 📋 RESUMO DA SESSÃO — 2026-07-09/10
 
 > As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta

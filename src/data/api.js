@@ -76,6 +76,11 @@ export const api = {
   updLocalidade: (id, data) => req('PUT', `/localidades/${id}`, data),
   delLocalidade: (id) => req('DELETE', `/localidades/${id}`),
 
+  // ----- atualização monetária (RF-D01) -----
+  indices: () => req('GET', '/indices'),
+  obraAtualizacao: (id, { dataBase, indice }) =>
+    req('GET', `/obras/${id}/atualizacao?dataBase=${encodeURIComponent(dataBase)}&indice=${encodeURIComponent(indice || 'SINAPI')}`),
+
   // ----- obras / indicadores / dashboard -----
   obras: (filtros) => {
     const ativos = Object.entries(filtros || {}).filter(([, v]) => v !== '' && v != null)
