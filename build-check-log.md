@@ -950,3 +950,37 @@ vigente e mostra a origem (tipo/vigência) ou "sem parâmetro".
 > Lembrete do handoff anterior: reiniciem o `node server/index.js` ao puxar (sem hot-reload).
 > Próximos de código: cronograma/curva S (RF-B05), dashboard com filtros (RF-G01), reimportação
 > idempotente (RF-C04).
+
+---
+
+## Atualização 2026-07-10 — dashboard com filtros (RF-G01)
+
+O Painel (`/api/dashboard`) agregava sempre o acervo inteiro. Agora aceita **filtros** — o mesmo
+vocabulário do Acervo (RF-E01) + período por data-base.
+
+**Backend:** `filtrosDashboard(query)` monta uma cláusula WHERE bindada sobre `orcamento.obras o`
+(tipo/padrão/localidade/cliente/status/elegível/área mín-máx/data-base início-fim), reaproveitada
+nas 3 agregações de obra (contagem, médias gerais e por tipo — via JOIN da view `vw_obra_indicadores`,
+que não expõe as colunas de filtro). O bloco de **estimativas** usa `filtrosEstimativa` com o
+subconjunto que a tabela tem (tipo/padrão/localidade/data-base). Guards de tipo (`filtroStr`/`filtroNum`,
+`condMes`) ignoram params repetidos (array) e valores inválidos — sem 500.
+**Frontend:** barra de filtros no Dashboard (selects + faixa de área + período `type=month` + Limpar),
+recarga **debounced** com guarda de sequência (`useRef`, "última resposta vence"); `api.dashboard(filtros)`
+retrocompatível (sem args = geral). Estado vazio distingue "nenhuma obra com esses filtros".
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 30 módulos |
+| dashboard filtrado live (servidor real :3010, banco como fonte da verdade) | ✅ **13/13**: sem filtro = 4 obras; por tipo → total e porTipo restritos (bate com o banco); elegível true/false; faixa de área; faixa impossível → 0/porTipo vazio/médias null; período por data-base; **param repetido (array) → 200 sem 500**; status inválido ignorado; estimativas coerentes com o filtro de tipo |
+| UI ao vivo (branch dev, token admin) | ✅ 6 KPIs + barra de filtros (6 selects, área mín/máx, data-base início–até, Limpar); filtro Urbanização → **4→2 obras**, R$ 394,05/m², porTipo só Urbanização; estado vazio "Nenhuma obra com esses filtros"; Limpar reseta; console limpo |
+| Regressão | ✅ `api.dashboard()` sem args → agregação geral idêntica à anterior |
+
+### Para o Cowork
+> Painel agora tem filtros (tipo, padrão, localidade, cliente, status, elegibilidade, faixa de área
+> e período por data-base), reaproveitando o vocabulário do Acervo. As médias vêm da view por JOIN
+> em obras (a view não tem as colunas de filtro). Os KPIs de **estimativas** só respondem aos filtros
+> que a tabela de estimativas tem (tipo/padrão/localidade/data-base) — cliente/status/área não se
+> aplicam a elas por design. Blindei os helpers contra params repetidos (array) e valores inválidos
+> (mesma classe do bug de ORDER BY que um review pegou no RF-E01). Próximos de código: cronograma/
+> curva S (RF-B05) e reimportação idempotente (RF-C04).
