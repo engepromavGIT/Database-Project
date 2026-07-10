@@ -122,7 +122,12 @@ export const api = {
   updateObra: (id, data) => req('PUT', `/obras/${id}`, data),
   deleteObra: (id) => req('DELETE', `/obras/${id}`),
   indicadores: () => req('GET', '/indicadores'),
-  dashboard: () => req('GET', '/dashboard'),
+  // dashboard() sem args = geral; com filtros (RF-G01) → mesma família de params do Acervo.
+  dashboard: (filtros) => {
+    const ativos = Object.entries(filtros || {}).filter(([, v]) => v !== '' && v != null)
+    const qs = ativos.length ? `?${new URLSearchParams(ativos).toString()}` : ''
+    return req('GET', `/dashboard${qs}`)
+  },
 
   // ----- detalhamento de obra (EAP / itens / realizados / ABC) -----
   obraEtapas: (obraId) => req('GET', `/obras/${obraId}/etapas`),

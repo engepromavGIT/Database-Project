@@ -804,13 +804,58 @@ app.get('/api/indicadores', wrap(async (_req, res) => {
     ORDER BY custo_m2_real DESC NULLS LAST`))
 }))
 
-app.get('/api/dashboard', wrap(async (_req, res) => {
-  const [obras] = await q('SELECT count(*)::int AS total, count(*) FILTER (WHERE elegivel_referencia)::int AS elegiveis FROM orcamento.obras')
+// Filtros do dashboard (RF-G01): mesmo vocabulário do Acervo (RF-E01) + período por
+// data-base (AAAA-MM). Constrói uma cláusula WHERE bindada sobre a tabela de obras. Os
+// filtros que a tabela de estimativas não possui (cliente/status/elegível/área) são
+// ignorados no bloco de estimativas — ele só reflete tipo/padrão/localidade/período.
+function condMes(v) {
+  const m = chaveMes(v)
+  return (typeof m === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(m)) ? `${m}-01` : null
+}
+// str() só aceita string não-vazia (params repetidos viram array no Express → ignorados,
+// evitando enviar um array como bind de coluna text/enum). numv() valida número finito.
+const filtroStr = (v) => (typeof v === 'string' && v ? v : null)
+const filtroNum = (v) => (typeof v === 'string' && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+function filtrosDashboard(query) {
+  const cond = []
+  const params = []
+  const bind = (v) => { params.push(v); return `$${params.length}` }
+  if (filtroStr(query.tipoObraId)) cond.push(`o.tipo_obra_id = ${bind(query.tipoObraId)}`)
+  if (filtroStr(query.padraoId)) cond.push(`o.padrao_id = ${bind(query.padraoId)}`)
+  if (filtroStr(query.localidadeId)) cond.push(`o.localidade_id = ${bind(query.localidadeId)}`)
+  if (filtroStr(query.clienteId)) cond.push(`o.cliente_id = ${bind(query.clienteId)}`)
+  if (STATUS_OBRA.includes(query.status)) cond.push(`o.status = ${bind(query.status)}`)
+  if (query.elegivel === 'true' || query.elegivel === 'false') cond.push(`o.elegivel_referencia = ${bind(query.elegivel === 'true')}`)
+  const aMin = filtroNum(query.areaMin); if (aMin != null) cond.push(`o.area_construida_m2 >= ${bind(aMin)}`)
+  const aMax = filtroNum(query.areaMax); if (aMax != null) cond.push(`o.area_construida_m2 <= ${bind(aMax)}`)
+  const di = condMes(query.dataBaseIni); if (di) cond.push(`o.data_base_custo >= ${bind(di)}`)
+  const df = condMes(query.dataBaseFim); if (df) cond.push(`o.data_base_custo <= ${bind(df)}`)
+  return { where: cond.length ? `WHERE ${cond.join(' AND ')}` : '', params }
+}
+function filtrosEstimativa(query) {
+  const cond = []
+  const params = []
+  const bind = (v) => { params.push(v); return `$${params.length}` }
+  if (filtroStr(query.tipoObraId)) cond.push(`e.tipo_obra_id = ${bind(query.tipoObraId)}`)
+  if (filtroStr(query.padraoId)) cond.push(`e.padrao_id = ${bind(query.padraoId)}`)
+  if (filtroStr(query.localidadeId)) cond.push(`e.localidade_id = ${bind(query.localidadeId)}`)
+  const di = condMes(query.dataBaseIni); if (di) cond.push(`e.data_base >= ${bind(di)}`)
+  const df = condMes(query.dataBaseFim); if (df) cond.push(`e.data_base <= ${bind(df)}`)
+  return { where: cond.length ? `WHERE ${cond.join(' AND ')}` : '', params }
+}
+
+app.get('/api/dashboard', wrap(async (req, res) => {
+  const fo = filtrosDashboard(req.query)
+  const [obras] = await q(
+    `SELECT count(*)::int AS total, count(*) FILTER (WHERE o.elegivel_referencia)::int AS elegiveis
+     FROM orcamento.obras o ${fo.where}`, fo.params)
   const [geral] = await q(`
-    SELECT round(avg(custo_m2_real)::numeric, 2) AS "custoM2Medio",
-           round(avg(fator_desvio_custo)::numeric, 4) AS "desvioCustoMedio",
-           round(avg(prazo_real_dias)::numeric, 0) AS "prazoMedioDias"
-    FROM orcamento.vw_obra_indicadores`)
+    SELECT round(avg(v.custo_m2_real)::numeric, 2) AS "custoM2Medio",
+           round(avg(v.fator_desvio_custo)::numeric, 4) AS "desvioCustoMedio",
+           round(avg(v.prazo_real_dias)::numeric, 0) AS "prazoMedioDias"
+    FROM orcamento.obras o
+    LEFT JOIN orcamento.vw_obra_indicadores v ON v.id = o.id
+    ${fo.where}`, fo.params)
   const porTipo = await q(`
     SELECT t.nome AS tipo, count(o.id)::int AS n,
            round(avg(v.custo_m2_real)::numeric, 2) AS "custoM2Medio",
@@ -818,12 +863,14 @@ app.get('/api/dashboard', wrap(async (_req, res) => {
     FROM orcamento.obras o
     JOIN orcamento.tipos_obra t ON t.id = o.tipo_obra_id
     LEFT JOIN orcamento.vw_obra_indicadores v ON v.id = o.id
-    GROUP BY t.nome ORDER BY n DESC`)
+    ${fo.where}
+    GROUP BY t.nome ORDER BY n DESC`, fo.params)
+  const fe = filtrosEstimativa(req.query)
   const [estimativas] = await q(`
     SELECT count(*)::int AS total,
-           count(*) FILTER (WHERE custo_realizado IS NOT NULL)::int AS calibradas,
-           round(avg(abs(erro_pct)) FILTER (WHERE erro_pct IS NOT NULL)::numeric, 1) AS "erroMedioAbs"
-    FROM orcamento.estimativas`)
+           count(*) FILTER (WHERE e.custo_realizado IS NOT NULL)::int AS calibradas,
+           round(avg(abs(e.erro_pct)) FILTER (WHERE e.erro_pct IS NOT NULL)::numeric, 1) AS "erroMedioAbs"
+    FROM orcamento.estimativas e ${fe.where}`, fe.params)
   res.json({ obras, geral, porTipo, estimativas })
 }))
 
