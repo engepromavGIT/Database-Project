@@ -740,15 +740,15 @@ por campos; aba **Cadastros** só p/ admin. Migration **010**: `UNIQUE(nome, tip
 
 ---
 
-# 📋 RESUMO DA SESSÃO — 2026-07-09
+# 📋 RESUMO DA SESSÃO — 2026-07-09/10
 
 > As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta
 > é a visão consolidada da sessão, para o Cowork acompanhar o estado.
 
 Começou verificando o handoff de 08/07 (Acervo + anexos) e, com ele fechado, rodou uma
 **auditoria de pendências** (workflow multi-agente: 4 lentes → verificação adversarial →
-síntese) que confirmou **32 pendências** em 4 direções. O usuário escolheu as frentes e
-elas foram implementadas uma a uma. **11 commits**, todos verificados.
+síntese) que confirmou **32 pendências**. A partir daí o usuário escolheu as frentes e elas
+foram implementadas uma a uma. **13 frentes de código** (+ commits de log), todas verificadas.
 
 ### Commits (base `9d5c080`)
 | Commit | Entrega |
@@ -758,23 +758,28 @@ elas foram implementadas uma a uma. **11 commits**, todos verificados.
 | `c8cebc5` | ETL: anexos grandes (25–100 MB) por conexão direta do Neon |
 | `c3a1920` | Comparar: "Custo real" mostra "—" para importadas |
 | `fa04c4d` | Migrations 006–008 aplicadas e verificadas na branch dev |
-| `3bc94c0` | Higiene/segurança: remove dumps com dados de cliente; corrige 500 no download (nome não-ASCII); guard fatal do JWT_SECRET |
+| `3bc94c0` | Higiene/segurança: remove dumps com dados de cliente; 500 no download (nome não-ASCII); guard fatal do JWT_SECRET |
 | `43f377a` | **RBAC + trilha de auditoria** (papel por request, `GET /api/auditoria` admin, log de ações) |
 | `852235d` | **Cobertura de testes**: auth, anexos, ETL (79 → 97 testes JS + 11 pytest) |
 | `bd88862` | **CRUD de clientes + edição/exclusão de obra** |
 | `f71d0c4` | Migration 009: `UNIQUE(obras.codigo)` |
 | `d71ca6d` | **Edição inline** de etapa/item/realizado (PUT + UI) |
+| `86c0efd` | **Busca/filtro de obras** (RF-E01) + **export CSV** (RF-G03) |
+| `bf9e93f` | **CRUD de cadastros de referência** (tipos, padrões, categorias, localidades) + migration 010 |
 
 ### Estado ao fim da sessão
 - **Ambiente local:** Node v24.18.0 e Python 3.13.14 instalados via winget (a máquina não tinha nenhum). `.env` da branch dev criado — **corrigido de produção → dev** (`ep-restless-dawn-af2pfvm7`); a connection string que circulou era a de prod.
-- **Banco dev:** migrations **001→009** aplicadas; schema `orcamento` com índice único de código, RBAC e trilha de auditoria funcionando.
-- **Testes:** `npm test` = **97** casos (sem banco) · `npm run test:py` = **11** (pytest do ETL, novo).
-- **RBAC:** admin-only = **consulta de auditoria** + **exclusão de obra inteira**; todo o resto (criar/editar/excluir linhas, estimar, importar) aberto a autenticados. Infra (`requireAdmin`, papel por request) pronta para gatear o CRUD de cadastros de referência quando existir.
+- **Banco dev:** migrations **001→010** aplicadas; schema `orcamento` com índices únicos (obras.codigo, categorias nome+tipo), RBAC e trilha de auditoria funcionando.
+- **Testes:** `npm test` = **97** casos (sem banco) · `npm run test:py` = **11** (pytest do ETL).
+- **RBAC:** admin-only = **consulta de auditoria** + **exclusão de obra inteira** + **CRUD dos cadastros de referência**; todo o resto (criar/editar/excluir linhas, obra, cliente, estimar, importar) aberto a autenticados.
+- **Cobertura funcional:** MVP (E0–E4) ~100%; escopo completo (com pós-MVP) **~85%** — módulos E/H completos, A/B/F/G quase completos, faltam itens *Importante/Desejável* e os bloqueados por dados.
 
 ### Processo (o que deu certo)
-Cada frente grande seguiu: implementação → **verificação live** no servidor real (`:3010`, tokens mintados, dados de teste sempre limpos) → **revisão adversarial por workflow** antes do commit. Os reviews pegaram e corrigiram bugs/regressões reais que os testes não pegavam: exclusão de linha admin-only travando a correção do dia-a-dia; excluir obra referenciada por estimativa dando 500 cru; reativação silenciosa de cliente inativo ao editar; `PUT` de realizado zerando `origem`; limite negativo e FK inválida virando 500.
+Cada frente grande seguiu: implementação → **verificação live** no servidor real (`:3010`, tokens mintados, dados de teste sempre limpos) → **revisão adversarial por workflow** antes do commit. Os reviews pegaram e corrigiram bugs/regressões reais que os testes não pegavam, p.ex.: exclusão de linha admin-only travando a correção do dia-a-dia; excluir obra referenciada por estimativa dando 500; reativação silenciosa de cliente inativo; `PUT` de realizado zerando `origem`; `ORDER BY` burlado por chave de protótipo (`?ordenar=constructor`); CSV formula-injection; fator regional estourando `numeric(6,4)`.
 
-### Pendente — bloqueado por dados que NÃO estão nesta máquina
+### Pendente
+**Dá para fazer agora (código):** serviços/composições CRUD (RF-A05); BDI por vigência no motor (RF-A07); cronograma/curva S (RF-B05); atualização monetária exposta (RF-D01); dashboard com filtros (RF-G01); reimportação idempotente (RF-C04).
+**Bloqueado por dados que NÃO estão nesta máquina:**
 - **Série oficial SINAPI** (hoje placeholder de fator 1): o CRUD/tela dá para fazer; carregar a série real, não.
 - **Robustez do parser** em layouts variados de PDF: precisa dos orçamentos reais.
 - **Anexo de 38 MB do MAPP-6219** no banco: precisa da pasta `orcamentos/` + `--commit --force` (o código de conexão direta já está pronto — commit `c8cebc5`).
