@@ -910,3 +910,43 @@ inativos" e botão Inativar/Ativar. Registrada em `ABAS_ADMIN` (`src/App.jsx`).
 > hot-reload — ao puxar estas mudanças, reiniciem o dev server pra API servir o novo código (o
 > Vite recarrega só o front). Com A05 o **módulo A** fica quase completo; resta BDI por vigência
 > (RF-A07). Próximos de código: RF-A07, cronograma/curva S (RF-B05), dashboard com filtros (RF-G01).
+
+---
+
+## Atualização 2026-07-10 — BDI por vigência no motor (RF-A07)
+
+`orcamento.parametros_bdi` (tipo de obra + BDI/encargos + janela de vigência) só tinha o seed
+`bdi_default` (25% global) e **nunca era usada** — o motor de estimativa pegava o `bdiPct` sempre
+do corpo da requisição. Agora tem CRUD **admin-only** e o motor **resolve o BDI vigente**.
+
+**Resolução (`resolverBdi`):** por tipo de obra + data-base — um parâmetro específico do tipo tem
+precedência sobre o global (`tipo_obra_id NULL`); entre candidatos vigentes (`inicio ≤ data ≤
+fim`, fim NULL = aberto), o de início mais recente vence; sem data → `CURRENT_DATE`.
+**Motor (`POST /api/estimativas`):** se o cliente informa `bdiPct`, usa (override manual); senão
+resolve o parâmetro vigente. Resposta ganha `bdiFonte` ∈ `manual|parametro|nenhum` (nas duas vias,
+paramétrica e bottom-up). Comportamento da UI preservado (o form sempre envia `bdiPct`).
+**CRUD + consulta:** `GET /api/parametros-bdi` (aberto), POST/PUT/DELETE admin (validação: BDI/
+encargos 0–9999,99 no `numeric(6,2)`; início `AAAA-MM-DD`; fim ≥ início), sem FK → DELETE físico;
+`GET /api/bdi-vigente?tipoObraId=&dataBase=` devolve o parâmetro resolvido. Auditoria (`parametro_bdi`).
+**Frontend:** seção **Parâmetros de BDI/encargos (por vigência)** no Cadastros (RegistroCRUD
+full-width, tipo select + datas); no Estimativa, botão **"Sugerir"** ao lado do BDI preenche pelo
+vigente e mostra a origem (tipo/vigência) ou "sem parâmetro".
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 97 testes JS · build 30 módulos |
+| CRUD + motor live (servidor real :3010, u1/u2) | ✅ **23/23**: escrita 403 p/ regular; validações (BDI negativo/overflow, data inválida, fim<início → 400); precedência **específico > global**; janela de vigência (2026→30%, 2099→40%); global quando não há específico; nada vigente → null; **motor** sem `bdiPct` → resolve 30% (`bdiFonte=parametro`, preço = esperado×1,30), com `bdiPct` → `manual`, sem vigente → `nenhum`/0%; PUT/DELETE 200/403/404; auditoria |
+| UI ao vivo (branch dev, token admin) | ✅ seção BDI full-width renderiza (seed "Todos 25%"); add específico "Comercial 30%/5%/2025-01-01" (ordenado por vigência); **"Sugerir"** no Estimativa preenche 30,00 + nota "Comercial, vigência desde 2025-01-01"; data antiga → "sem parâmetro vigente"; console limpo; cadastros existentes intactos |
+| Limpeza | ✅ parâmetro + estimativas + logs de teste removidos (só `bdi_default` restou) |
+
+### Para o Cowork
+> BDI por vigência no ar — fecha o **módulo A**. O motor agora resolve o BDI automaticamente
+> (específico do tipo > global; por data-base), com `bdiFonte` na resposta pra deixar claro se veio
+> de parâmetro, manual ou nenhum. A UI segue enviando o BDI do form (override manual), e adicionei o
+> botão **"Sugerir"** no Estimativa pra puxar o vigente com um clique. **Ação de vocês:** o seed
+> `bdi_default` é 25% global de exemplo — cadastrem os BDIs reais da PROMAV por tipo/vigência na aba
+> Cadastros (encargos separados também entram no cálculo do preço no futuro, se quiserem compô-los).
+> Lembrete do handoff anterior: reiniciem o `node server/index.js` ao puxar (sem hot-reload).
+> Próximos de código: cronograma/curva S (RF-B05), dashboard com filtros (RF-G01), reimportação
+> idempotente (RF-C04).
