@@ -81,6 +81,12 @@ export const api = {
   obraAtualizacao: (id, { dataBase, indice }) =>
     req('GET', `/obras/${id}/atualizacao?dataBase=${encodeURIComponent(dataBase)}&indice=${encodeURIComponent(indice || 'SINAPI')}`),
 
+  // ----- índices econômicos: série mensal (RF-A06) — escrita restrita a admin -----
+  indicesEconomicos: (indice) => req('GET', `/indices-economicos${indice ? `?indice=${encodeURIComponent(indice)}` : ''}`),
+  createIndice: (data) => req('POST', '/indices-economicos', data),
+  updIndice: (id, data) => req('PUT', `/indices-economicos/${id}`, data),
+  delIndice: (id) => req('DELETE', `/indices-economicos/${id}`),
+
   // ----- obras / indicadores / dashboard -----
   obras: (filtros) => {
     const ativos = Object.entries(filtros || {}).filter(([, v]) => v !== '' && v != null)

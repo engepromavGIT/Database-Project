@@ -5,7 +5,7 @@ import { api } from '../data/api.js'
 // também exigem requireAdmin no servidor). Um componente genérico serve os 4 cadastros.
 const vazioDe = (campos) => Object.fromEntries(campos.map((c) => [c.key, '']))
 
-function RegistroCRUD({ titulo, campos, listar, criar, atualizar, excluir }) {
+function RegistroCRUD({ titulo, campos, listar, criar, atualizar, excluir, fullWidth }) {
   const [itens, setItens] = useState([])
   const [form, setForm] = useState(vazioDe(campos))
   const [editId, setEditId] = useState(null)
@@ -38,7 +38,7 @@ function RegistroCRUD({ titulo, campos, listar, criar, atualizar, excluir }) {
   }
 
   return (
-    <section className="card" style={{ padding: 'var(--sp-4)' }}>
+    <section className="card" style={{ padding: 'var(--sp-4)', ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }}>
       <div className="eyebrow">{titulo} ({itens.length})</div>
       <form onSubmit={salvar} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: 'var(--sp-3) 0' }}>
         {campos.map((c) => (c.tipo === 'select' ? (
@@ -48,7 +48,9 @@ function RegistroCRUD({ titulo, campos, listar, criar, atualizar, excluir }) {
           </select>
         ) : (
           <input key={c.key} className="control" style={{ flex: c.flex || '1 1 120px' }}
-            type={c.tipo || 'text'} step={c.tipo === 'number' ? '0.0001' : undefined} min={c.tipo === 'number' ? '0' : undefined}
+            type={c.tipo || 'text'}
+            step={c.step ?? (c.tipo === 'number' ? '0.0001' : undefined)}
+            min={c.min ?? (c.tipo === 'number' ? '0' : undefined)} max={c.max}
             maxLength={c.maxLength} placeholder={c.rotulo} value={form[c.key]} onChange={set(c.key)} />
         )))}
         <button className="btn btn-primary btn-sm" disabled={busy || !podeSalvar}>{editId ? 'Salvar' : 'Adicionar'}</button>
@@ -88,6 +90,11 @@ const CAT_TIPOS = [
 ]
 const rotuloCatTipo = (v) => CAT_TIPOS.find((t) => t.valor === v)?.rotulo || v || '—'
 
+// Índices econômicos (RF-A06): série mensal p/ atualização monetária.
+const MESES = Array.from({ length: 12 }, (_, i) => ({ valor: String(i + 1), rotulo: String(i + 1).padStart(2, '0') }))
+const fmtMes = (v) => (v == null || v === '' ? '—' : String(v).padStart(2, '0'))
+const fmtValor = (v) => (v == null || v === '' ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
+
 export function Cadastros() {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)', alignItems: 'start' }}>
@@ -110,6 +117,14 @@ export function Cadastros() {
           { key: 'fatorRegional', rotulo: 'Fator', tipo: 'number', flex: '0 0 84px' },
         ]}
         listar={api.localidades} criar={api.createLocalidade} atualizar={api.updLocalidade} excluir={api.delLocalidade} />
+      <RegistroCRUD titulo="Índices econômicos" fullWidth
+        campos={[
+          { key: 'indice', rotulo: 'Índice', obrigatorio: true, maxLength: 20, flex: '2 1 120px' },
+          { key: 'ano', rotulo: 'Ano', tipo: 'number', step: '1', min: '1900', max: '2100', obrigatorio: true, flex: '0 0 90px' },
+          { key: 'mes', rotulo: 'Mês', tipo: 'select', opcoes: MESES, obrigatorio: true, flex: '0 0 90px', formatar: fmtMes },
+          { key: 'valor', rotulo: 'Valor', tipo: 'number', step: '0.0001', obrigatorio: true, flex: '1 1 120px', formatar: fmtValor },
+        ]}
+        listar={() => api.indicesEconomicos()} criar={api.createIndice} atualizar={api.updIndice} excluir={api.delIndice} />
     </div>
   )
 }

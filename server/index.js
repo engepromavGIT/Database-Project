@@ -396,6 +396,63 @@ app.delete('/api/localidades/:id', requireAdmin, wrap(async (req, res) => {
   res.json({ ok: true })
 }))
 
+// ----- Índices econômicos (RF-A06): série mensal (SINAPI/SICRO/INCC…) que alimenta a
+// atualização monetária (RF-D01) e a estimativa. Leitura aberta (o motor precisa da série);
+// escrita restrita a admin. Nada referencia esta tabela por FK, então DELETE não trata 23503.
+// A UNIQUE(indice, ano, mes) vira 409; a validação de faixa evita o CHECK do banco (mes 1..12).
+function indiceCampos(body = {}) {
+  const indice = asStr(body.indice).toUpperCase()
+  const ano = Number(body.ano)
+  const mes = Number(body.mes)
+  const valor = Number(body.valor)
+  return { indice, ano, mes, valor }
+}
+const indiceValido = (c) =>
+  !!c.indice &&
+  Number.isInteger(c.ano) && c.ano >= 1900 && c.ano <= 2100 &&
+  Number.isInteger(c.mes) && c.mes >= 1 && c.mes <= 12 &&
+  Number.isFinite(c.valor) && c.valor > 0 && c.valor < 1e10
+const ERRO_INDICE = 'Informe índice, ano (1900–2100), mês (1–12) e valor (> 0).'
+const CONFLITO_INDICE = 'Já existe um ponto para esse índice/ano/mês.'
+
+app.get('/api/indices-economicos', wrap(async (req, res) => {
+  const { indice } = req.query
+  if (indice != null && typeof indice !== 'string') return res.status(400).json({ error: 'Índice inválido.' })
+  const cond = indice ? 'WHERE indice = $1' : ''
+  const params = indice ? [indice] : []
+  res.json(await q(
+    `SELECT id, indice, ano, mes, valor FROM orcamento.indices_economicos ${cond} ORDER BY indice, ano DESC, mes DESC`, params))
+}))
+app.post('/api/indices-economicos', requireAdmin, wrap(async (req, res) => {
+  const c = indiceCampos(req.body)
+  if (!indiceValido(c)) return res.status(400).json({ error: ERRO_INDICE })
+  const id = genId('idx')
+  try {
+    await q('INSERT INTO orcamento.indices_economicos (id, indice, ano, mes, valor) VALUES ($1,$2,$3,$4,$5)',
+      [id, c.indice, c.ano, c.mes, c.valor])
+  } catch (e) { if (e.code === '23505') return res.status(409).json({ error: CONFLITO_INDICE }); throw e }
+  await registrarLog(req, 'create', 'indice', id)
+  res.status(201).json({ id, ...c })
+}))
+app.put('/api/indices-economicos/:id', requireAdmin, wrap(async (req, res) => {
+  const c = indiceCampos(req.body)
+  if (!indiceValido(c)) return res.status(400).json({ error: ERRO_INDICE })
+  let upd
+  try {
+    upd = await q('UPDATE orcamento.indices_economicos SET indice=$2, ano=$3, mes=$4, valor=$5 WHERE id=$1 RETURNING id, indice, ano, mes, valor',
+      [req.params.id, c.indice, c.ano, c.mes, c.valor])
+  } catch (e) { if (e.code === '23505') return res.status(409).json({ error: CONFLITO_INDICE }); throw e }
+  if (!upd.length) return res.status(404).json({ error: 'Ponto de índice não encontrado.' })
+  await registrarLog(req, 'update', 'indice', req.params.id)
+  res.json(upd[0])
+}))
+app.delete('/api/indices-economicos/:id', requireAdmin, wrap(async (req, res) => {
+  const del = await q('DELETE FROM orcamento.indices_economicos WHERE id = $1 RETURNING id', [req.params.id])
+  if (!del.length) return res.status(404).json({ error: 'Ponto de índice não encontrado.' })
+  await registrarLog(req, 'delete', 'indice', req.params.id)
+  res.json({ ok: true })
+}))
+
 // ============================================================
 // Obras (acervo)
 // ============================================================
@@ -945,6 +1002,7 @@ app.use((err, _req, res, _next) => {
   if (err.code === '23503') return res.status(400).json({ error: 'Referência inválida (cliente, tipo, padrão ou localidade inexistente).' })
   if (err.code === '23505') return res.status(409).json({ error: 'Registro duplicado.' })
   if (err.code === '22003' || err.code === '22P02') return res.status(400).json({ error: 'Valor numérico fora da faixa permitida.' })
+  if (err.code === '23514') return res.status(400).json({ error: 'Valor fora da faixa permitida.' })
   res.status(500).json({ error: err.message })
 })
 
