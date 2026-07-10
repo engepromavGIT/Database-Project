@@ -984,3 +984,56 @@ retrocompatível (sem args = geral). Estado vazio distingue "nenhuma obra com es
 > aplicam a elas por design. Blindei os helpers contra params repetidos (array) e valores inválidos
 > (mesma classe do bug de ORDER BY que um review pegou no RF-E01). Próximos de código: cronograma/
 > curva S (RF-B05) e reimportação idempotente (RF-C04).
+
+---
+
+## Atualização 2026-07-10 — cronograma físico-financeiro / Curva S (RF-B05)
+
+A tabela `orcamento.medicoes` existia desde a migration 001 (rotulada "curva S") mas **nunca
+foi ligada a rota/tela**. Agora RF-B05 (US-17) está completo: registro de medições + **Curva S
+de previsto × realizado exibível**.
+
+**Design decidido por workflow (painel de 3 arquiteto + juiz):** previsto **híbrido** — linha
+**linear** derivada das datas de plano da obra por padrão (curva exibível sem digitar nada,
+inclusive em obras legadas), **refinável** por uma linha de base registrada por competência
+(colunas novas `avanco_plan_pct`/`desembolso_plan`); flag `previstoFonte` ('baseline'|'linear'|null)
+torna a origem transparente. Físico = % acumulado; desembolso = incremental → soma acumulada;
+% financeiro sobre `custo_orcado_total` sem cap (estouro > 100% preservado). Financeiro realizado
+por precedência de série: `custos_realizados` (primária, zero digitação nova) senão `medicoes.desembolso`.
+
+**Migration 011** (idempotente; `medicoes` vazia hoje): baseline opcional + `observacao`/`criado_por`/
+timestamps, `COMMENT` fixando a semântica, `CHECK` de faixas (0–100 físico, ≥0 monetário),
+`UNIQUE(obra_id, competencia)` + normaliza competência p/ dia 01 (dedup legado antes).
+**Backend:** função **pura `server/curvaS.js`** (espelho de `curvaABC.js`; **nunca lança** → zero
+500) + 5 rotas em `obraDetalhe.js`: `GET .../curva-s`, `GET/POST .../medicoes` (POST cria; mês
+duplicado → 409), `PUT/DELETE /medicoes/:id`. Auditoria (`medicao`). Sem `recalcularObra` (medições
+não alimentam `custo_real_total`).
+**Frontend:** componente **`CurvaS`** no ObraDetalhe (após a Atualização monetária): SVG inline
+(previsto tracejado × realizado sólido, toggle Físico|Financeiro, gridlines escaladas por `yMaxPct`,
+realizado em vermelho no estouro) + tabela + mini-CRUD de medições (com toggle "linha de base").
+
+### Revisão adversarial (verificação no navegador) — 1 bug real, corrigido
+| Bug (sev) | Correção |
+|-----------|----------|
+| **`numOrNull(null)` devolvia 0** (`Number(null)===0`): colunas `null` do `pg` viravam 0, então `avanco_plan_pct=null` ligava `previstoFonte='baseline'` espúrio e criava desembolso 0. Os testes unitários não pegaram (usavam chaves **omitidas** = `undefined` → NaN → null; o `pg` devolve `null` explícito). Pego na **verificação ao vivo no navegador**. | `numOrNull` trata `null`/`''` → `null` antes do `Number()`. +4 asserções de regressão com `null` explícito. |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ **128 testes JS** (97 + **31→35** da curva S) · build 30 módulos |
+| migration 011 | ✅ aplicada na dev (colunas de baseline + `UNIQUE` + CHECK); `medicoes` limpa |
+| CRUD + curva-s live (servidor real :3010, u2 regular) | ✅ **26/26**: previsto linear das datas; POST/PUT/DELETE; **mês duplicado (dia diferente) → 409**; faixa/mês/vazio/obra inexistente → 400/404; realizado físico + LOCF; financeiro via `medicoes.desembolso`; baseline precede linear; auditoria |
+| UI ao vivo (branch dev, obra de teste com datas de plano) | ✅ SVG previsto+realizado, toggle Financeiro (previsto→100%, realizado patamar 30% = 150k/500k), tabela correta, nota de origem, mini-CRUD add + **edição inline** (competência não-editável), console limpo |
+| Limpeza | ✅ obra de teste (CASCADE nas medições) + logs removidos; 0 medições no schema |
+
+### Para o Cowork
+> Curva S no ar — **módulo B praticamente completo**. Decisão de design (via workflow): previsto é
+> **linear das datas de plano** por padrão (exibível sem digitar nada), e vira **linha de base real**
+> quando vocês registram `avanço/desembolso previsto` por competência. Toda a matemática é uma função
+> pura (`curvaS.js`, testada, nunca 500). **Achado importante:** a verificação no navegador pegou um
+> bug que 31 testes unitários não pegaram — `Number(null)===0` fazia o `pg` transformar colunas nulas
+> em 0 e ligar um "baseline" fantasma; corrigido + travado com testes de `null` explícito (lição:
+> testar com o `null` do banco, não só chaves omitidas). Migration 011 aplicada na dev. **Semântica
+> a comunicar ao usuário:** avanço físico = % **acumulado**; desembolso = valor **do mês**. Limitação
+> conhecida (v1): o % financeiro é **nominal** (não deflaciona por RF-D01). Próximos de código:
+> reimportação idempotente (RF-C04).
