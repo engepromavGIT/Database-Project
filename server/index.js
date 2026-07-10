@@ -503,6 +503,95 @@ app.put('/api/servicos/:id', requireAdmin, wrap(async (req, res) => {
   res.json(upd[0])
 }))
 
+// ----- Parâmetros de BDI/encargos por vigência (RF-A07): escrita admin. Leitura aberta
+// (o motor resolve o BDI vigente + tela de gestão). tipo_obra_id NULL = parâmetro GLOBAL.
+// Sem FK referenciando a tabela → DELETE físico. Vigência: [inicio, fim]; fim NULL = aberto.
+const BDI_SELECT = `
+  SELECT b.id, b.tipo_obra_id AS "tipoObraId", t.nome AS "tipoObra",
+         b.bdi_pct AS "bdiPct", b.encargos_pct AS "encargosPct",
+         to_char(b.vigencia_inicio,'YYYY-MM-DD') AS "vigenciaInicio",
+         to_char(b.vigencia_fim,'YYYY-MM-DD') AS "vigenciaFim"
+  FROM orcamento.parametros_bdi b
+  LEFT JOIN orcamento.tipos_obra t ON t.id = b.tipo_obra_id`
+
+// Resolve o BDI aplicável por tipo de obra + data-base. Um parâmetro específico do tipo
+// tem precedência sobre o global (tipo_obra_id NULL); entre candidatos vigentes, o de
+// início mais recente vence. Sem data → usa CURRENT_DATE.
+async function resolverBdi(tipoObraId, dataBase) {
+  const dataRef = dataBaseDate(dataBase)
+  const rows = await q(
+    `${BDI_SELECT}
+     WHERE (b.tipo_obra_id = $1 OR b.tipo_obra_id IS NULL)
+       AND b.vigencia_inicio <= COALESCE($2::date, CURRENT_DATE)
+       AND (b.vigencia_fim IS NULL OR b.vigencia_fim >= COALESCE($2::date, CURRENT_DATE))
+     ORDER BY (b.tipo_obra_id IS NOT NULL) DESC, b.vigencia_inicio DESC
+     LIMIT 1`,
+    [tipoObraId || null, dataRef])
+  return rows[0] || null
+}
+
+function bdiCampos(body = {}) {
+  const num = (v) => (v == null || v === '' ? null : Number(v))
+  return {
+    tipoObraId: body.tipoObraId || null,
+    bdiPct: num(body.bdiPct),
+    encargosPct: body.encargosPct == null || body.encargosPct === '' ? 0 : Number(body.encargosPct),
+    vigenciaInicio: asStr(body.vigenciaInicio),
+    vigenciaFim: asStr(body.vigenciaFim) || null,
+  }
+}
+const DATA_RE = /^\d{4}-\d{2}-\d{2}$/
+const dataValida = (s) => DATA_RE.test(s) && !Number.isNaN(Date.parse(s))
+// bdi_pct/encargos_pct são numeric(6,2) → faixa [0, 10000) evita overflow (22003).
+function bdiValido(c) {
+  if (!Number.isFinite(c.bdiPct) || c.bdiPct < 0 || c.bdiPct >= 10000) return false
+  if (!Number.isFinite(c.encargosPct) || c.encargosPct < 0 || c.encargosPct >= 10000) return false
+  if (!dataValida(c.vigenciaInicio)) return false
+  if (c.vigenciaFim != null && (!dataValida(c.vigenciaFim) || c.vigenciaFim < c.vigenciaInicio)) return false
+  return true
+}
+const ERRO_BDI = 'Informe BDI e encargos (0–9999,99), vigência início (AAAA-MM-DD) e, se houver, fim ≥ início.'
+
+app.get('/api/parametros-bdi', wrap(async (_req, res) => {
+  res.json(await q(`${BDI_SELECT} ORDER BY b.vigencia_inicio DESC, t.nome NULLS FIRST`))
+}))
+// BDI vigente resolvido (para o motor/UI): ?tipoObraId=&dataBase=AAAA-MM. Retorna o parâmetro ou null.
+app.get('/api/bdi-vigente', wrap(async (req, res) => {
+  const tipoObraId = typeof req.query.tipoObraId === 'string' ? req.query.tipoObraId : null
+  const dataBase = typeof req.query.dataBase === 'string' ? req.query.dataBase : null
+  res.json(await resolverBdi(tipoObraId, dataBase))
+}))
+app.post('/api/parametros-bdi', requireAdmin, wrap(async (req, res) => {
+  const c = bdiCampos(req.body)
+  if (!bdiValido(c)) return res.status(400).json({ error: ERRO_BDI })
+  const id = genId('bdi')
+  await q(
+    `INSERT INTO orcamento.parametros_bdi (id, tipo_obra_id, bdi_pct, encargos_pct, vigencia_inicio, vigencia_fim)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id, c.tipoObraId, c.bdiPct, c.encargosPct, c.vigenciaInicio, c.vigenciaFim])
+  await registrarLog(req, 'create', 'parametro_bdi', id)
+  const [row] = await q(`${BDI_SELECT} WHERE b.id = $1`, [id])
+  res.status(201).json(row)
+}))
+app.put('/api/parametros-bdi/:id', requireAdmin, wrap(async (req, res) => {
+  const c = bdiCampos(req.body)
+  if (!bdiValido(c)) return res.status(400).json({ error: ERRO_BDI })
+  const upd = await q(
+    `UPDATE orcamento.parametros_bdi SET tipo_obra_id=$2, bdi_pct=$3, encargos_pct=$4, vigencia_inicio=$5, vigencia_fim=$6
+     WHERE id=$1 RETURNING id`,
+    [req.params.id, c.tipoObraId, c.bdiPct, c.encargosPct, c.vigenciaInicio, c.vigenciaFim])
+  if (!upd.length) return res.status(404).json({ error: 'Parâmetro de BDI não encontrado.' })
+  await registrarLog(req, 'update', 'parametro_bdi', req.params.id)
+  const [row] = await q(`${BDI_SELECT} WHERE b.id = $1`, [req.params.id])
+  res.json(row)
+}))
+app.delete('/api/parametros-bdi/:id', requireAdmin, wrap(async (req, res) => {
+  const del = await q('DELETE FROM orcamento.parametros_bdi WHERE id = $1 RETURNING id', [req.params.id])
+  if (!del.length) return res.status(404).json({ error: 'Parâmetro de BDI não encontrado.' })
+  await registrarLog(req, 'delete', 'parametro_bdi', req.params.id)
+  res.json({ ok: true })
+}))
+
 // ============================================================
 // Obras (acervo)
 // ============================================================
@@ -781,10 +870,21 @@ app.post('/api/analogas', wrap(async (req, res) => {
 // E6 — Motor de estimativa (paramétrica e bottom-up) com versão/cenário
 // ============================================================
 app.post('/api/estimativas', wrap(async (req, res) => {
-  const { descricao, metodo = 'parametrica', bdiPct = 0 } = req.body || {}
+  const { descricao, metodo = 'parametrica' } = req.body || {}
   if (!descricao) return res.status(400).json({ error: 'Informe a descrição da estimativa.' })
   const alvo = await montarAlvo(req.body)
   const { grupo, versao } = await resolverGrupo(req.body?.grupo || null)
+
+  // BDI por vigência (RF-A07): se o cliente informar bdiPct, usa (override manual); senão o
+  // motor resolve o parâmetro vigente por tipo de obra + data-base. bdiFonte explicita a origem.
+  const bdiInformado = req.body?.bdiPct != null && req.body?.bdiPct !== ''
+  let bdiPct = bdiInformado ? Number(req.body.bdiPct) || 0 : 0
+  let bdiParam = null
+  if (!bdiInformado) {
+    bdiParam = await resolverBdi(alvo.tipoObraId, alvo.dataBase)
+    if (bdiParam) bdiPct = Number(bdiParam.bdiPct) || 0
+  }
+  const bdiFonte = bdiInformado ? 'manual' : (bdiParam ? 'parametro' : 'nenhum')
 
   // ----- Bottom-up por EAP -----
   if (metodo === 'bottom_up') {
@@ -828,7 +928,7 @@ app.post('/api/estimativas', wrap(async (req, res) => {
       aderencia: { fator: round2(ad.fator), desvio: round2(ad.desvio), n: ad.n },
       custo: { O: round2(bu.O), M: round2(bu.M), P: round2(bu.P), esperado: round2(bu.esperado) },
       prazo: { O: roundInt(prazo.O), M: roundInt(prazo.M), P: roundInt(prazo.P), esperado: roundInt(prazo.esperado) },
-      bdiPct: Number(bdiPct) || 0, preco, itens,
+      bdiPct: Number(bdiPct) || 0, bdiFonte, preco, itens,
     })
   }
 
@@ -872,7 +972,7 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     id, descricao, metodo, alvo, grupo, versao,
     custo: { O: round2(custo.O), M: round2(custo.M), P: round2(custo.P), esperado: round2(custo.esperado) },
     prazo: { O: roundInt(prazo.O), M: roundInt(prazo.M), P: roundInt(prazo.P), esperado: roundInt(prazo.esperado) },
-    nivelConfianca: conf, rotulo: rotuloConfianca(conf), bdiPct: Number(bdiPct) || 0, preco,
+    nivelConfianca: conf, rotulo: rotuloConfianca(conf), bdiPct: Number(bdiPct) || 0, bdiFonte, preco,
     analogas,
   })
 }))

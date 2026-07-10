@@ -67,6 +67,20 @@ export const api = {
   createServico: (data) => req('POST', '/servicos', data),
   updServico: (id, data) => req('PUT', `/servicos/${id}`, data),
 
+  // ----- parâmetros de BDI por vigência (RF-A07) — escrita admin -----
+  parametrosBdi: () => req('GET', '/parametros-bdi'),
+  createBdi: (data) => req('POST', '/parametros-bdi', data),
+  updBdi: (id, data) => req('PUT', `/parametros-bdi/${id}`, data),
+  delBdi: (id) => req('DELETE', `/parametros-bdi/${id}`),
+  // BDI vigente resolvido (motor por vigência): retorna o parâmetro aplicável ou null.
+  bdiVigente: (tipoObraId, dataBase) => {
+    const p = new URLSearchParams()
+    if (tipoObraId) p.set('tipoObraId', tipoObraId)
+    if (dataBase) p.set('dataBase', dataBase)
+    const qs = p.toString()
+    return req('GET', `/bdi-vigente${qs ? `?${qs}` : ''}`)
+  },
+
   // ----- clientes (RF-A01 / US-08) -----
   clientes: (todos) => req('GET', `/clientes${todos ? '?todos=1' : ''}`),
   createCliente: (data) => req('POST', '/clientes', data),

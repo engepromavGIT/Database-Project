@@ -54,8 +54,23 @@ export function Estimativa() {
   const [estimativas, setEstimativas] = useState([])
   const [erro, setErro] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [bdiNota, setBdiNota] = useState(null) // feedback do "Sugerir (vigente)"
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+
+  // RF-A07 — preenche o BDI com o parâmetro vigente (por tipo de obra + data-base).
+  const sugerirBdi = async () => {
+    setErro(null)
+    try {
+      const p = await api.bdiVigente(form.tipoObraId, form.dataBase)
+      if (p) {
+        setForm((f) => ({ ...f, bdiPct: String(p.bdiPct) }))
+        setBdiNota(`BDI ${Number(p.bdiPct).toFixed(2)}% — ${p.tipoObra || 'global'}, vigência desde ${p.vigenciaInicio}`)
+      } else {
+        setBdiNota('Sem parâmetro de BDI vigente para este tipo/data-base.')
+      }
+    } catch (e) { setErro(e.message) }
+  }
 
   const carregarBase = async () => {
     const [t, p, l, s, es, ce] = await Promise.all([
@@ -154,7 +169,11 @@ export function Estimativa() {
         <div className="field"><label>Data-base</label>
           <input className="control" type="month" value={form.dataBase} onChange={set('dataBase')} /></div>
         <div className="field"><label>BDI (%)</label>
-          <input className="control" type="number" min="0" step="0.1" value={form.bdiPct} onChange={set('bdiPct')} /></div>
+          <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+            <input className="control" style={{ flex: 1 }} type="number" min="0" step="0.1" value={form.bdiPct} onChange={set('bdiPct')} />
+            <button type="button" className="btn btn-ghost btn-sm" title="Preencher com o BDI vigente (por tipo/data-base)" onClick={sugerirBdi}>Sugerir</button>
+          </div>
+          {bdiNota && <small style={{ color: 'var(--fg-3)' }}>{bdiNota}</small>}</div>
 
         {metodo === 'parametrica' && (
           <button className="btn btn-secondary" disabled={busy || !form.areaAlvoM2} onClick={buscar}>

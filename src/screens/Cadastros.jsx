@@ -95,7 +95,15 @@ const MESES = Array.from({ length: 12 }, (_, i) => ({ valor: String(i + 1), rotu
 const fmtMes = (v) => (v == null || v === '' ? '—' : String(v).padStart(2, '0'))
 const fmtValor = (v) => (v == null || v === '' ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }))
 
+const fmtPct = (v) => (v == null || v === '' ? '—' : `${Number(v).toFixed(2)}%`)
+
 export function Cadastros() {
+  // Tipos de obra alimentam o select (opcional) dos parâmetros de BDI.
+  const [tipos, setTipos] = useState([])
+  useEffect(() => { api.tiposObra().then(setTipos).catch(() => {}) }, [])
+  const tipoOpcoes = tipos.map((t) => ({ valor: t.id, rotulo: t.nome }))
+  const tipoNome = (id) => (id ? (tipos.find((t) => t.id === id)?.nome || id) : 'Todos')
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)', alignItems: 'start' }}>
       <RegistroCRUD titulo="Tipos de obra"
@@ -125,6 +133,15 @@ export function Cadastros() {
           { key: 'valor', rotulo: 'Valor', tipo: 'number', step: '0.0001', obrigatorio: true, flex: '1 1 120px', formatar: fmtValor },
         ]}
         listar={() => api.indicesEconomicos()} criar={api.createIndice} atualizar={api.updIndice} excluir={api.delIndice} />
+      <RegistroCRUD titulo="Parâmetros de BDI/encargos (por vigência)" fullWidth
+        campos={[
+          { key: 'tipoObraId', rotulo: 'Tipo (vazio = todos)', tipo: 'select', opcoes: tipoOpcoes, flex: '2 1 150px', formatar: tipoNome },
+          { key: 'bdiPct', rotulo: 'BDI %', tipo: 'number', step: '0.01', obrigatorio: true, flex: '0 0 90px', formatar: fmtPct },
+          { key: 'encargosPct', rotulo: 'Encargos %', tipo: 'number', step: '0.01', flex: '0 0 110px', formatar: fmtPct },
+          { key: 'vigenciaInicio', rotulo: 'Início', tipo: 'date', obrigatorio: true, flex: '0 0 150px' },
+          { key: 'vigenciaFim', rotulo: 'Fim', tipo: 'date', flex: '0 0 150px', formatar: (v) => v || '—' },
+        ]}
+        listar={api.parametrosBdi} criar={api.createBdi} atualizar={api.updBdi} excluir={api.delBdi} />
     </div>
   )
 }
