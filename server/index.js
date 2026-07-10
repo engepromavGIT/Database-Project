@@ -49,6 +49,8 @@ const STATUS_OBRA = ['planejada', 'em_andamento', 'concluida', 'cancelada']
 const round2 = (v) => (v == null ? null : Math.round(v * 100) / 100)
 const roundInt = (v) => (v == null ? null : Math.round(v))
 const dataBaseDate = (d) => (d ? (d.length === 7 ? `${d}-01` : d) : null)
+// Trim seguro: valor não-string vira '' (cai na validação de vazio) em vez de estourar .trim().
+const asStr = (v) => (typeof v === 'string' ? v.trim() : '')
 
 function requireApiKey(req, res, next) {
   const key = process.env.INTEGRACAO_API_KEY
@@ -292,6 +294,106 @@ app.put('/api/clientes/:id', wrap(async (req, res) => {
   if (!upd.length) return res.status(404).json({ error: 'Cliente não encontrado.' })
   await registrarLog(req, 'update', 'cliente', req.params.id)
   res.json(upd[0])
+}))
+
+// ----- Cadastros de referência (RF-A02/A03/A04/A08): ESCRITA restrita a admin. -----
+// A leitura (GETs acima) é aberta — o front precisa dos selects. DELETE trata FK (registro
+// em uso) com 409; nome duplicado cai no 23505 → 409 (handler global). Os nomes de tabela
+// abaixo são constantes de confiança (não entrada do usuário), então a interpolação é segura.
+function cadastroNome(app, { rota, tabela, entidade, prefixo }) {
+  app.post(`/api/${rota}`, requireAdmin, wrap(async (req, res) => {
+    const nome = asStr(req.body?.nome)
+    if (!nome) return res.status(400).json({ error: 'Informe o nome.' })
+    const id = genId(prefixo)
+    await q(`INSERT INTO orcamento.${tabela} (id, nome) VALUES ($1, $2)`, [id, nome])
+    await registrarLog(req, 'create', entidade, id)
+    res.status(201).json({ id, nome })
+  }))
+  app.put(`/api/${rota}/:id`, requireAdmin, wrap(async (req, res) => {
+    const nome = asStr(req.body?.nome)
+    if (!nome) return res.status(400).json({ error: 'Informe o nome.' })
+    const upd = await q(`UPDATE orcamento.${tabela} SET nome = $2 WHERE id = $1 RETURNING id, nome`, [req.params.id, nome])
+    if (!upd.length) return res.status(404).json({ error: 'Registro não encontrado.' })
+    await registrarLog(req, 'update', entidade, req.params.id)
+    res.json(upd[0])
+  }))
+  app.delete(`/api/${rota}/:id`, requireAdmin, wrap(async (req, res) => {
+    let del
+    try { del = await q(`DELETE FROM orcamento.${tabela} WHERE id = $1 RETURNING id`, [req.params.id]) }
+    catch (e) { if (e.code === '23503') return res.status(409).json({ error: 'Não é possível excluir: o registro está em uso.' }); throw e }
+    if (!del.length) return res.status(404).json({ error: 'Registro não encontrado.' })
+    await registrarLog(req, 'delete', entidade, req.params.id)
+    res.json({ ok: true })
+  }))
+}
+cadastroNome(app, { rota: 'tipos-obra', tabela: 'tipos_obra', entidade: 'tipo_obra', prefixo: 'tobra' })
+cadastroNome(app, { rota: 'padroes', tabela: 'padroes_acabamento', entidade: 'padrao', prefixo: 'padr' })
+
+// Categorias de custo (nome + tipo enum)
+const CATEGORIA_TIPOS = ['material', 'mao_de_obra', 'equipamento', 'terceiros', 'indireto']
+app.post('/api/categorias', requireAdmin, wrap(async (req, res) => {
+  const nome = asStr(req.body?.nome)
+  const tipo = req.body?.tipo
+  if (!nome) return res.status(400).json({ error: 'Informe o nome.' })
+  if (!CATEGORIA_TIPOS.includes(tipo)) return res.status(400).json({ error: 'Tipo de categoria inválido.' })
+  const id = genId('cat')
+  await q('INSERT INTO orcamento.categorias_custo (id, nome, tipo) VALUES ($1,$2,$3)', [id, nome, tipo])
+  await registrarLog(req, 'create', 'categoria', id)
+  res.status(201).json({ id, nome, tipo })
+}))
+app.put('/api/categorias/:id', requireAdmin, wrap(async (req, res) => {
+  const nome = asStr(req.body?.nome)
+  const tipo = req.body?.tipo
+  if (!nome) return res.status(400).json({ error: 'Informe o nome.' })
+  if (!CATEGORIA_TIPOS.includes(tipo)) return res.status(400).json({ error: 'Tipo de categoria inválido.' })
+  const upd = await q('UPDATE orcamento.categorias_custo SET nome=$2, tipo=$3 WHERE id=$1 RETURNING id, nome, tipo', [req.params.id, nome, tipo])
+  if (!upd.length) return res.status(404).json({ error: 'Categoria não encontrada.' })
+  await registrarLog(req, 'update', 'categoria', req.params.id)
+  res.json(upd[0])
+}))
+app.delete('/api/categorias/:id', requireAdmin, wrap(async (req, res) => {
+  let del
+  try { del = await q('DELETE FROM orcamento.categorias_custo WHERE id = $1 RETURNING id', [req.params.id]) }
+  catch (e) { if (e.code === '23503') return res.status(409).json({ error: 'Não é possível excluir: a categoria está em uso.' }); throw e }
+  if (!del.length) return res.status(404).json({ error: 'Categoria não encontrada.' })
+  await registrarLog(req, 'delete', 'categoria', req.params.id)
+  res.json({ ok: true })
+}))
+
+// Localidades (município + UF + fator regional)
+function localidadeCampos(body = {}) {
+  const municipio = asStr(body.municipio)
+  const uf = asStr(body.uf).toUpperCase()
+  const raw = body.fatorRegional
+  const fatorRegional = raw == null || raw === '' ? 1 : Number(raw)
+  return { municipio, uf, fatorRegional }
+}
+// UF = 2 letras; fator_regional é numeric(6,4) → faixa aberta (0, 100), senão o INSERT estoura (22003).
+const localidadeValida = (c) => c.municipio && /^[A-Z]{2}$/.test(c.uf) && Number.isFinite(c.fatorRegional) && c.fatorRegional > 0 && c.fatorRegional < 100
+const ERRO_LOCALIDADE = 'Informe município, UF (2 letras) e fator regional entre 0 e 100.'
+app.post('/api/localidades', requireAdmin, wrap(async (req, res) => {
+  const c = localidadeCampos(req.body)
+  if (!localidadeValida(c)) return res.status(400).json({ error: ERRO_LOCALIDADE })
+  const id = genId('loc')
+  await q('INSERT INTO orcamento.localidades (id, municipio, uf, fator_regional) VALUES ($1,$2,$3,$4)', [id, c.municipio, c.uf, c.fatorRegional])
+  await registrarLog(req, 'create', 'localidade', id)
+  res.status(201).json({ id, ...c })
+}))
+app.put('/api/localidades/:id', requireAdmin, wrap(async (req, res) => {
+  const c = localidadeCampos(req.body)
+  if (!localidadeValida(c)) return res.status(400).json({ error: ERRO_LOCALIDADE })
+  const upd = await q('UPDATE orcamento.localidades SET municipio=$2, uf=$3, fator_regional=$4 WHERE id=$1 RETURNING id, municipio, uf, fator_regional AS "fatorRegional"', [req.params.id, c.municipio, c.uf, c.fatorRegional])
+  if (!upd.length) return res.status(404).json({ error: 'Localidade não encontrada.' })
+  await registrarLog(req, 'update', 'localidade', req.params.id)
+  res.json(upd[0])
+}))
+app.delete('/api/localidades/:id', requireAdmin, wrap(async (req, res) => {
+  let del
+  try { del = await q('DELETE FROM orcamento.localidades WHERE id = $1 RETURNING id', [req.params.id]) }
+  catch (e) { if (e.code === '23503') return res.status(409).json({ error: 'Não é possível excluir: a localidade está em uso.' }); throw e }
+  if (!del.length) return res.status(404).json({ error: 'Localidade não encontrada.' })
+  await registrarLog(req, 'delete', 'localidade', req.params.id)
+  res.json({ ok: true })
 }))
 
 // ============================================================
@@ -805,6 +907,7 @@ app.use((err, _req, res, _next) => {
   // Traduz erros conhecidos do Postgres em respostas de negócio (evita 500 cru + vazar schema).
   if (err.code === '23503') return res.status(400).json({ error: 'Referência inválida (cliente, tipo, padrão ou localidade inexistente).' })
   if (err.code === '23505') return res.status(409).json({ error: 'Registro duplicado.' })
+  if (err.code === '22003' || err.code === '22P02') return res.status(400).json({ error: 'Valor numérico fora da faixa permitida.' })
   res.status(500).json({ error: err.message })
 })
 

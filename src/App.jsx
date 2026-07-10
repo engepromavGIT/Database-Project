@@ -7,6 +7,7 @@ import { Cenarios } from './screens/Cenarios.jsx'
 import { Comparar } from './screens/Comparar.jsx'
 import { Importar } from './screens/Importar.jsx'
 import { Clientes } from './screens/Clientes.jsx'
+import { Cadastros } from './screens/Cadastros.jsx'
 import { Auditoria } from './screens/Auditoria.jsx'
 
 // ---------------- Login ----------------
@@ -68,12 +69,15 @@ const ABAS = [
   ['comparar', 'Comparar', Comparar],
   ['importar', 'Importar', Importar],
 ]
-// Aba restrita a administradores (o endpoint /api/auditoria também exige admin).
-const ABA_ADMIN = ['auditoria', 'Auditoria', Auditoria]
+// Abas restritas a administradores (as rotas de escrita/consulta também exigem requireAdmin).
+const ABAS_ADMIN = [
+  ['cadastros', 'Cadastros', Cadastros],
+  ['auditoria', 'Auditoria', Auditoria],
+]
 
 function Shell({ user, onLogout }) {
   const [aba, setAba] = useState('painel')
-  const abas = user.isAdmin ? [...ABAS, ABA_ADMIN] : ABAS
+  const abas = user.isAdmin ? [...ABAS, ...ABAS_ADMIN] : ABAS
   const Tela = (abas.find(([id]) => id === aba) || abas[0])[2]
   return (
     <div style={{ maxWidth: 1060, margin: '0 auto', padding: 'var(--sp-4)' }}>

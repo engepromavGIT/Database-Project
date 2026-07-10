@@ -62,6 +62,20 @@ export const api = {
   createCliente: (data) => req('POST', '/clientes', data),
   updateCliente: (id, data) => req('PUT', `/clientes/${id}`, data),
 
+  // ----- cadastros de referência: escrita (admin) — RF-A02/A03/A04/A08 -----
+  createTipoObra: (data) => req('POST', '/tipos-obra', data),
+  updTipoObra: (id, data) => req('PUT', `/tipos-obra/${id}`, data),
+  delTipoObra: (id) => req('DELETE', `/tipos-obra/${id}`),
+  createPadrao: (data) => req('POST', '/padroes', data),
+  updPadrao: (id, data) => req('PUT', `/padroes/${id}`, data),
+  delPadrao: (id) => req('DELETE', `/padroes/${id}`),
+  createCategoria: (data) => req('POST', '/categorias', data),
+  updCategoria: (id, data) => req('PUT', `/categorias/${id}`, data),
+  delCategoria: (id) => req('DELETE', `/categorias/${id}`),
+  createLocalidade: (data) => req('POST', '/localidades', data),
+  updLocalidade: (id, data) => req('PUT', `/localidades/${id}`, data),
+  delLocalidade: (id) => req('DELETE', `/localidades/${id}`),
+
   // ----- obras / indicadores / dashboard -----
   obras: (filtros) => {
     const ativos = Object.entries(filtros || {}).filter(([, v]) => v !== '' && v != null)

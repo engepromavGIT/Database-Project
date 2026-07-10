@@ -703,6 +703,43 @@ na montagem; obras no `[filtros]`).
 
 ---
 
+## Atualização 2026-07-09 — CRUD de cadastros de referência (RF-A02/A03/A04/A08)
+
+Próximo bloco Essencial: os cadastros de referência (tipos de obra, padrões, categorias,
+localidades) eram só-leitura. Agora têm CRUD **admin-only** — dá uso real ao `requireAdmin`.
+
+**Backend (server/index.js):** fábrica `cadastroNome` gera POST/PUT/DELETE p/ os cadastros
+de só-nome (tipos-obra, padroes); rotas explícitas p/ categorias (nome + tipo enum) e
+localidades (município + UF + fator regional). Escrita = `requireAdmin`; leitura segue aberta
+(selects do front). DELETE trata FK → **409 "em uso"**; nome duplicado → 409 (handler global).
+Auditoria em create/update/delete.
+**Frontend:** componente genérico `RegistroCRUD` (lista + form add/edit + delete) parametrizado
+por campos; aba **Cadastros** só p/ admin. Migration **010**: `UNIQUE(nome, tipo)` em categorias.
+
+### Revisão adversarial (workflow, 2 lentes) — 4 achados distintos, TODOS corrigidos
+| # | Achado (sev) | Correção |
+|---|--------------|----------|
+| 1 (média) | `fator_regional` sem teto → valor ≥ 100 estoura `numeric(6,4)` (Postgres 22003) → **500 cru** + vaza msg. | validação `0 < fator < 100`; handler global mapeia `22003`/`22P02` → 400. |
+| 2 (baixa) | Campo não-string (`{nome:5}`) → `.trim()` TypeError → 500. | helper `asStr()` (não-string → '' → 400 limpo) em nome/município/UF. |
+| 3 (baixa) | `categorias_custo` sem UNIQUE → duplicatas silenciosas (assimetria com os outros 3). | migration 010 `UNIQUE(nome,tipo)` (dedup legado antes, como a 009) → 23505 → 409. |
+| 4 (baixa) | UF validava só comprimento → `12`/`S1` passavam apesar de "2 letras". | regex `/^[A-Z]{2}$/`. |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / build / migrate | ✅ 001→010 aplicadas na dev |
+| CRUD live (servidor real) | ✅ 14/14: admin-only 403, duplicado 409, FK-em-uso 409, validação de tipo/UF/fator, uppercase de UF, auditoria |
+| fixes do review (live) | ✅ 8/8: fator=150 → 400, UF "12"/"S1" → 400, nome não-string → 400, categoria duplicada → 409, casos válidos OK |
+| UI (stub, 2 papéis) | ✅ aba admin-only; 4 seções; CRUD de tipos (add/editar/excluir); categoria com select; não-admin não vê Cadastros nem Auditoria |
+
+### Para o Cowork
+> CRUD dos 4 cadastros de referência no ar (admin-only) — o módulo A ficou praticamente completo
+> (faltam serviços/composições e BDI por vigência). O review pegou 4 itens, com destaque p/ o fator
+> regional que estourava o `numeric(6,4)` e dava 500; agora valida a faixa e o handler global traduz
+> overflow numérico p/ 400. Migration 010 (`UNIQUE(nome,tipo)` em categorias) já aplicada na dev.
+
+---
+
 # 📋 RESUMO DA SESSÃO — 2026-07-09
 
 > As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta
