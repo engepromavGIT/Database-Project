@@ -4,9 +4,37 @@
 import { q } from './db.js'
 import { requireAuth, registrarLog } from './auth.js'
 import { curvaABC } from './curvaABC.js'
+import { curvaS } from './curvaS.js'
 
 const genId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+
+// Medições (RF-B05): normaliza 'AAAA-MM'/'AAAA-MM-DD' para o 1º dia do mês; null se inválido.
+function mesPrimeiroDia(v) {
+  if (typeof v !== 'string') return null
+  const m = v.match(/^(\d{4})-(0[1-9]|1[0-2])/)
+  return m ? `${m[1]}-${m[2]}-01` : null
+}
+// Valida um valor opcional numa faixa. Ausente ('' / null) → ok com val=null.
+function numFaixa(v, lo, hi) {
+  if (v == null || v === '') return { ok: true, val: null }
+  const n = Number(v)
+  if (!Number.isFinite(n) || n < lo || (hi != null && n > hi)) return { ok: false, val: null }
+  return { ok: true, val: n }
+}
+// Campos de uma medição (previsto + realizado). Retorna os validados + flags de erro.
+function medicaoCampos(body = {}) {
+  const av = numFaixa(body.avancoFisicoPct, 0, 100)
+  const avP = numFaixa(body.avancoPlanPct, 0, 100)
+  const d = numFaixa(body.desembolso, 0, null)
+  const dP = numFaixa(body.desembolsoPlan, 0, null)
+  const observacao = typeof body.observacao === 'string' ? body.observacao.trim() || null : null
+  const faixaOk = av.ok && avP.ok && d.ok && dP.ok
+  const algumValor = [av.val, avP.val, d.val, dP.val].some((x) => x != null)
+  return { av, avP, d, dP, observacao, faixaOk, algumValor }
+}
+const ERRO_FAIXA = 'Valores fora da faixa (avanço físico 0–100%, desembolso ≥ 0).'
+const ERRO_VAZIO = 'Informe ao menos um valor (avanço ou desembolso).'
 
 // Monta o Content-Disposition de um anexo. O parâmetro filename= só aceita ASCII
 // (o Node lança ERR_INVALID_CHAR em codepoint > 0xFF), então dá o nome real acentuado
@@ -186,6 +214,80 @@ export function registrarObraDetalhe(app) {
        FROM orcamento.itens_custo i JOIN orcamento.etapas e ON e.id = i.etapa_id
        WHERE e.obra_id = $1`, [req.params.id])
     res.json(curvaABC(itens.map((i) => ({ id: i.id, descricao: i.descricao, custoTotal: Number(i.custoTotal) }))))
+  }))
+
+  // ----- Cronograma físico-financeiro / Curva S (RF-B05) -----
+  // Curva S de PREVISTO × REALIZADO. Todo o cálculo vive na função pura curvaS() → nunca 500.
+  app.get('/api/obras/:id/curva-s', requireAuth, wrap(async (req, res) => {
+    const [obra] = await q(
+      `SELECT to_char(dt_inicio_plan, 'YYYY-MM-DD') AS "dtInicioPlan",
+              to_char(dt_fim_plan,    'YYYY-MM-DD') AS "dtFimPlan",
+              custo_orcado_total AS "custoOrcadoTotal"
+       FROM orcamento.obras WHERE id = $1`, [req.params.id])
+    if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+    const medicoes = await q(
+      `SELECT to_char(competencia, 'YYYY-MM-DD') AS competencia,
+              avanco_fisico_pct AS "avancoFisicoPct", avanco_plan_pct AS "avancoPlanPct",
+              desembolso, desembolso_plan AS "desembolsoPlan"
+       FROM orcamento.medicoes WHERE obra_id = $1`, [req.params.id])
+    const custosRealizados = await q(
+      `SELECT to_char(date_trunc('month', cr.competencia), 'YYYY-MM-DD') AS competencia, sum(cr.valor) AS valor
+       FROM orcamento.custos_realizados cr JOIN orcamento.etapas e ON e.id = cr.etapa_id
+       WHERE e.obra_id = $1 GROUP BY date_trunc('month', cr.competencia)`, [req.params.id])
+    res.json(curvaS({ medicoes, plano: obra, custosRealizados }))
+  }))
+
+  app.get('/api/obras/:id/medicoes', requireAuth, wrap(async (req, res) => {
+    res.json(await q(
+      `SELECT id, to_char(competencia, 'YYYY-MM') AS competencia,
+              avanco_fisico_pct AS "avancoFisicoPct", avanco_plan_pct AS "avancoPlanPct",
+              desembolso, desembolso_plan AS "desembolsoPlan", observacao
+       FROM orcamento.medicoes WHERE obra_id = $1 ORDER BY competencia`, [req.params.id]))
+  }))
+
+  // CRIA uma medição (convenção POST-cria/PUT-edita do módulo; mês único → UNIQUE → 409).
+  app.post('/api/obras/:id/medicoes', requireAuth, wrap(async (req, res) => {
+    const [obra] = await q('SELECT 1 FROM orcamento.obras WHERE id = $1', [req.params.id])
+    if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+    const mes = mesPrimeiroDia(req.body?.competencia)
+    if (!mes) return res.status(400).json({ error: 'Informe a competência (AAAA-MM).' })
+    const c = medicaoCampos(req.body)
+    if (!c.faixaOk) return res.status(400).json({ error: ERRO_FAIXA })
+    if (!c.algumValor) return res.status(400).json({ error: ERRO_VAZIO })
+    const id = genId('med')
+    try {
+      await q(
+        `INSERT INTO orcamento.medicoes
+           (id, obra_id, competencia, avanco_fisico_pct, avanco_plan_pct, desembolso, desembolso_plan, observacao, criado_por)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, req.params.id, mes, c.av.val, c.avP.val, c.d.val, c.dP.val, c.observacao, req.userId])
+    } catch (e) {
+      if (e.code === '23505') return res.status(409).json({ error: 'Já existe medição para este mês (edite ou exclua a existente).' })
+      throw e
+    }
+    await registrarLog(req, 'create', 'medicao', id)
+    res.status(201).json({ id })
+  }))
+
+  // Edita valores de uma medição por id. NÃO altera competencia/obra_id (evita colisão de mês).
+  app.put('/api/medicoes/:id', requireAuth, wrap(async (req, res) => {
+    const c = medicaoCampos(req.body)
+    if (!c.faixaOk) return res.status(400).json({ error: ERRO_FAIXA })
+    if (!c.algumValor) return res.status(400).json({ error: ERRO_VAZIO })
+    const upd = await q(
+      `UPDATE orcamento.medicoes
+         SET avanco_fisico_pct=$2, avanco_plan_pct=$3, desembolso=$4, desembolso_plan=$5, observacao=$6, updated_at=now()
+       WHERE id=$1 RETURNING id`,
+      [req.params.id, c.av.val, c.avP.val, c.d.val, c.dP.val, c.observacao])
+    if (!upd.length) return res.status(404).json({ error: 'Medição não encontrada.' })
+    await registrarLog(req, 'update', 'medicao', req.params.id)
+    res.json({ id: req.params.id })
+  }))
+
+  app.delete('/api/medicoes/:id', requireAuth, wrap(async (req, res) => {
+    const del = await q('DELETE FROM orcamento.medicoes WHERE id = $1 RETURNING id', [req.params.id])
+    if (del.length) await registrarLog(req, 'delete', 'medicao', req.params.id)
+    res.json({ ok: true })
   }))
 
   // ----- Anexos da obra (RF-B06 / US-18): caminho de LEITURA -----

@@ -144,6 +144,13 @@ export const api = {
   delRealizado: (id) => req('DELETE', `/realizados/${id}`),
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
 
+  // ----- cronograma físico-financeiro / curva S (RF-B05) -----
+  curvaS: (obraId) => req('GET', `/obras/${obraId}/curva-s`),
+  obraMedicoes: (obraId) => req('GET', `/obras/${obraId}/medicoes`),
+  addMedicao: (obraId, data) => req('POST', `/obras/${obraId}/medicoes`, data),
+  updMedicao: (id, data) => req('PUT', `/medicoes/${id}`, data),
+  delMedicao: (id) => req('DELETE', `/medicoes/${id}`),
+
   // ----- auditoria (RF-B08 / RF-H05) — restrito a admin -----
   auditoria: (limite = 100) => req('GET', `/auditoria?limite=${limite}`),
 

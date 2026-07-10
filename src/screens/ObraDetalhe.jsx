@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl } from '../data/format.js'
+import { brl, num, pct } from '../data/format.js'
 
 const desvioPct = (orc, real) => {
   const o = Number(orc) || 0
@@ -80,6 +80,202 @@ function AtualizacaoMonetaria({ obra }) {
             : <div style={{ color: 'var(--fg-3)', fontSize: 12, marginTop: 4 }}>Fator {resultado.indice}: {resultado.fator} ({resultado.dataBaseOrigem} → {resultado.dataBaseAlvo})</div>}
         </>
       )}
+    </div>
+  )
+}
+
+// RF-B05 — Cronograma físico-financeiro / Curva S de previsto × realizado.
+// A curva é computada no backend (função pura curvaS.js); aqui só desenhamos (SVG inline).
+const MED_VAZIA = { competencia: '', avancoFisicoPct: '', desembolso: '', avancoPlanPct: '', desembolsoPlan: '' }
+const FONTE_PREV = { baseline: 'linha de base', linear: 'linear (datas de plano)' }
+const FONTE_FIN = { custos_realizados: 'custos realizados', medicoes: 'desembolso das medições' }
+
+function CurvaS({ obra }) {
+  const [curva, setCurva] = useState(null)
+  const [medicoes, setMedicoes] = useState([])
+  const [dim, setDim] = useState('fisico') // 'fisico' | 'financeiro'
+  const [form, setForm] = useState(MED_VAZIA)
+  const [comBase, setComBase] = useState(false)
+  const [editId, setEditId] = useState(null)
+  const [erro, setErro] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const carregar = async () => {
+    try {
+      const [c, m] = await Promise.all([api.curvaS(obra.id), api.obraMedicoes(obra.id)])
+      setCurva(c); setMedicoes(m)
+    } catch (e) { setErro(e.message) }
+  }
+  useEffect(() => {
+    setCurva(null); setMedicoes([]); setEditId(null); setErro(null); setComBase(false); setForm(MED_VAZIA)
+    carregar()
+  }, [obra.id])
+
+  const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
+  const limpar = () => { setEditId(null); setForm(MED_VAZIA) }
+  const editar = (m) => {
+    setEditId(m.id)
+    setForm({
+      competencia: m.competencia || '',
+      avancoFisicoPct: m.avancoFisicoPct ?? '', desembolso: m.desembolso ?? '',
+      avancoPlanPct: m.avancoPlanPct ?? '', desembolsoPlan: m.desembolsoPlan ?? '',
+    })
+    if (m.avancoPlanPct != null || m.desembolsoPlan != null) setComBase(true)
+  }
+  const numOr = (v) => (String(v).trim() === '' ? null : Number(v))
+  const temValor = [form.avancoFisicoPct, form.desembolso, comBase ? form.avancoPlanPct : '', comBase ? form.desembolsoPlan : '']
+    .some((v) => String(v).trim() !== '')
+  const podeSalvar = (editId || form.competencia) && temValor
+
+  const salvar = async () => {
+    if (busy || !podeSalvar) return
+    setErro(null); setBusy(true)
+    try {
+      const dados = {
+        competencia: form.competencia,
+        avancoFisicoPct: numOr(form.avancoFisicoPct), desembolso: numOr(form.desembolso),
+        avancoPlanPct: comBase ? numOr(form.avancoPlanPct) : null,
+        desembolsoPlan: comBase ? numOr(form.desembolsoPlan) : null,
+      }
+      if (editId) await api.updMedicao(editId, dados)
+      else await api.addMedicao(obra.id, dados)
+      limpar(); await carregar()
+    } catch (e) { setErro(e.message) } finally { setBusy(false) }
+  }
+  const remover = async (m) => {
+    if (!window.confirm(`Excluir a medição de ${m.competencia}?`)) return
+    setErro(null)
+    try { await api.delMedicao(m.id); if (editId === m.id) limpar(); await carregar() }
+    catch (e) { setErro(e.message) }
+  }
+
+  const pontos = curva?.pontos || []
+  const temBaseFin = curva && curva.custoOrcadoTotal != null && Number(curva.custoOrcadoTotal) > 0
+  const isFin = dim === 'financeiro'
+  // Série e escala do eixo Y conforme a dimensão selecionada.
+  const prevKey = !isFin ? 'prevFisicoPct' : (temBaseFin ? 'prevFinanceiroPct' : 'prevFinanceiro')
+  const realKey = !isFin ? 'realFisicoPct' : (temBaseFin ? 'realFinanceiroPct' : 'realFinanceiro')
+  const emPct = !isFin || temBaseFin
+  const yMax = emPct
+    ? (curva?.yMaxPct || 100)
+    : Math.max(1, ...pontos.map((p) => Math.max(Number(p.prevFinanceiro) || 0, Number(p.realFinanceiro) || 0)))
+  const estouro = isFin && temBaseFin && pontos.some((p) => p.realFinanceiroPct != null && p.realFinanceiroPct > 100)
+  const corReal = estouro ? 'var(--danger)' : 'var(--brand)'
+
+  // Geometria do SVG.
+  const W = 720, H = 260, ML = 52, MR = 12, MT = 12, MB = 30
+  const PW = W - ML - MR, PH = H - MT - MB
+  const n = pontos.length
+  const px = (i) => ML + (n <= 1 ? PW / 2 : (i / (n - 1)) * PW)
+  const py = (v) => MT + PH * (1 - (Number(v) / yMax))
+  const pathOf = (key) => pontos.map((p, i) => (p[key] == null ? null : `${px(i).toFixed(1)},${py(p[key]).toFixed(1)}`)).filter(Boolean).join(' ')
+  const prevPath = pathOf(prevKey)
+  const realPath = pathOf(realKey)
+  const níveis = [0, 0.25, 0.5, 0.75, 1].map((f) => f * yMax)
+  const rotuloY = (v) => (emPct ? `${Math.round(v)}%` : num(v, 0))
+  const passoX = n <= 8 ? 1 : Math.ceil(n / 7)
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <strong style={{ fontSize: 13 }}>Cronograma físico-financeiro (Curva S)</strong>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className={`btn btn-sm ${!isFin ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setDim('fisico')}>Físico</button>
+          <button className={`btn btn-sm ${isFin ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setDim('financeiro')}>Financeiro</button>
+        </div>
+      </div>
+      {erro && <div className="login-error" style={{ marginTop: 6 }}>{erro}</div>}
+
+      {pontos.length === 0 ? (
+        <p className="empty" style={{ marginTop: 8 }}>Sem dados. Cadastre medições ou defina as datas de plano da obra.</p>
+      ) : (
+        <>
+          <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ marginTop: 8, maxWidth: '100%' }} role="img" aria-label="Curva S">
+            {níveis.map((v, k) => (
+              <g key={k}>
+                <line x1={ML} y1={py(v)} x2={W - MR} y2={py(v)} stroke="var(--border)" strokeWidth="1" />
+                <text x={ML - 6} y={py(v) + 3} textAnchor="end" fontSize="10" fill="var(--fg-3)">{rotuloY(v)}</text>
+              </g>
+            ))}
+            {pontos.map((p, i) => (i % passoX === 0 || i === n - 1) && (
+              <text key={i} x={px(i)} y={H - 10} textAnchor="middle" fontSize="9" fill="var(--fg-3)">{p.competencia}</text>
+            ))}
+            {prevPath && <polyline points={prevPath} fill="none" stroke="var(--fg-3)" strokeWidth="1.5" strokeDasharray="5 4" />}
+            {realPath && <polyline points={realPath} fill="none" stroke={corReal} strokeWidth="2" />}
+            {pontos.map((p, i) => (p[realKey] != null ? <circle key={i} cx={px(i)} cy={py(p[realKey])} r="2.5" fill={corReal} /> : null))}
+          </svg>
+
+          <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', fontSize: 12, color: 'var(--fg-3)', marginTop: 4 }}>
+            <span><svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="var(--fg-3)" strokeWidth="1.5" strokeDasharray="5 4" /></svg> Previsto</span>
+            <span><svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={corReal} strokeWidth="2" /></svg> Realizado{estouro ? ' (estouro > 100%)' : ''}</span>
+          </div>
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8 }}>
+            <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+              <th>Competência</th><th>Físico prev.</th><th>Físico real.</th><th>Financ. prev.</th><th>Financ. real.</th>
+            </tr></thead>
+            <tbody>
+              {pontos.map((p) => (
+                <tr key={p.competencia} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td>{p.competencia}</td>
+                  <td>{p.prevFisicoPct == null ? '—' : pct(p.prevFisicoPct)}</td>
+                  <td>{p.realFisicoPct == null ? '—' : pct(p.realFisicoPct)}</td>
+                  <td>{brl(p.prevFinanceiro)}</td>
+                  <td>{brl(p.realFinanceiro)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* Origem do previsto / financeiro realizado (transparência) */}
+      <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 6 }}>
+        {curva && (curva.previstoFonte
+          ? `Previsto: ${FONTE_PREV[curva.previstoFonte] || curva.previstoFonte}`
+          : 'Previsto: sem base — defina datas de plano da obra ou registre a linha de base.')}
+        {curva?.fonteFinanceiroRealizado && ` · Financeiro realizado: ${FONTE_FIN[curva.fonteFinanceiroRealizado]}`}
+        {curva?.semBaseFinanceira && ' · sem custo orçado → financeiro em R$ (sem %)'}
+        <br />Avanço físico = % acumulado · Desembolso = valor do mês · % financeiro = desembolso acumulado ÷ orçado.
+      </div>
+
+      {/* Mini-CRUD de medições */}
+      <div style={{ marginTop: 'var(--sp-3)' }}>
+        <strong style={{ fontSize: 12 }}>Medições {editId ? '· editando' : ''}</strong>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 6 }}>
+          <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+            <th>Competência</th><th>Fís. real %</th><th>Desemb. R$</th><th>Fís. prev %</th><th>Desemb. prev R$</th><th></th>
+          </tr></thead>
+          <tbody>
+            {medicoes.map((m) => (
+              <tr key={m.id} style={{ borderTop: '1px solid var(--border)', background: editId === m.id ? 'var(--bg-subtle)' : 'transparent' }}>
+                <td>{m.competencia}</td>
+                <td>{m.avancoFisicoPct == null ? '—' : pct(m.avancoFisicoPct)}</td>
+                <td>{brl(m.desembolso)}</td>
+                <td>{m.avancoPlanPct == null ? '—' : pct(m.avancoPlanPct)}</td>
+                <td>{brl(m.desembolsoPlan)}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <button className="btn btn-ghost btn-sm" title="Editar" onClick={() => editar(m)}>✎</button>
+                  <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => remover(m)}>×</button>
+                </td>
+              </tr>
+            ))}
+            {medicoes.length === 0 && <tr><td colSpan="6" className="empty">Sem medições.</td></tr>}
+          </tbody>
+        </table>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6, alignItems: 'center' }}>
+          <input className="control" style={{ width: 130 }} type="month" value={form.competencia} onChange={setF('competencia')} disabled={!!editId} title={editId ? 'Competência não editável (exclua e recrie)' : 'Competência'} />
+          <input className="control" style={{ width: 96 }} type="number" min="0" max="100" step="0.01" placeholder="fís. %" value={form.avancoFisicoPct} onChange={setF('avancoFisicoPct')} />
+          <input className="control" style={{ width: 110 }} type="number" min="0" step="0.01" placeholder="desemb. R$" value={form.desembolso} onChange={setF('desembolso')} />
+          <label style={{ fontSize: 12, color: 'var(--fg-3)', display: 'flex', gap: 4, alignItems: 'center' }}>
+            <input type="checkbox" checked={comBase} onChange={(e) => setComBase(e.target.checked)} /> linha de base (previsto)
+          </label>
+          {comBase && <input className="control" style={{ width: 96 }} type="number" min="0" max="100" step="0.01" placeholder="prev. fís. %" value={form.avancoPlanPct} onChange={setF('avancoPlanPct')} />}
+          {comBase && <input className="control" style={{ width: 120 }} type="number" min="0" step="0.01" placeholder="prev. desemb. R$" value={form.desembolsoPlan} onChange={setF('desembolsoPlan')} />}
+          <button className="btn btn-secondary btn-sm" onClick={salvar} disabled={busy || !podeSalvar}>{editId ? 'Salvar' : '+'}</button>
+          {editId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={limpar}>✕</button>}
+        </div>
+      </div>
     </div>
   )
 }
@@ -178,7 +374,7 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
       {erro && <div className="login-error">{erro}</div>}
 
       <AtualizacaoMonetaria obra={obra} />
-
+      <CurvaS obra={obra} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)', marginTop: 'var(--sp-3)' }}>
         {/* Etapas */}
