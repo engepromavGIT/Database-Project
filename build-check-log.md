@@ -1086,3 +1086,51 @@ reimportar o mesmo código **falhava com 409**. Agora é **idempotente por chave
 > pavimentos, datas de plano) são preservadas. Observação: a idempotência é do importador **web**
 > (CSV/Excel); o ETL Python de PDF já dedupava por código na gravação. Módulo C fica completo no
 > app (resta só o que depende de PDFs reais para robustez do parser).
+
+---
+
+## Atualização 2026-07-13 — importador de série de índices em lote (RF-A06) + revisão adversarial
+
+O usuário escolheu esta frente (as duas que sugeri — série SINAPI oficial e robustez do parser —
+estão bloqueadas por dados que não estão nesta máquina). Em vez de carregar a série real (que eu
+não tenho), construí o **loader em lote** que torna a carga trivial quando ela existir: cola a
+série e grava tudo de uma vez, idempotente. Complementa o CRUD ponto-a-ponto (já feito no RF-A06).
+
+**Parser puro** (`server/importacao/indices.js`, espelho de `mapear.js`, nunca lança) — 3 formatos
+por linha: `AAAA-MM valor` · `AAAA MM valor` (3 colunas) · matriz anual `AAAA v1…v12`. Índice inline
+sobrescreve o campo; decimal pt-BR; dedup por `(indice,ano,mes)`.
+**Endpoint** `POST /api/indices-economicos/importar` (admin): `dryRun` (prévia sem gravar) + commit
+**transacional** (upsert idempotente por `(indice,ano,mes)`; tudo-ou-nada).
+**UI** — painel "Importar série de índices (em lote)" no Cadastros: textarea + Pré-visualizar/Importar,
+com a lista de índices recarregando sozinha após a carga.
+
+### Revisão adversarial (workflow: 4 dimensões → verificação → síntese) — 7 defeitos, TODOS corrigidos
+15 achados → 12 confirmados → **7 defeitos distintos**. **Padrão perigoso pego:** o parser resolvia
+ambiguidades de formato *gravando dado errado em silêncio* (validação só conferia faixas, nunca a intenção).
+
+| Sev | Defeito | Correção |
+|-----|---------|----------|
+| **alta** | Colar 3 colunas `2024⇥1⇥100,50` virava **matriz** (Jan=1, Fev=100,50) — corrupção silenciosa | formato 3-colunas suportado explicitamente (mês 1..12 + 1 valor → ponto único; índices nunca valem 1..12) |
+| **alta** | Célula **vazia** no meio da matriz (`2024;100;;102`) deslocava todos os meses seguintes | separador explícito preserva a **posição** (vazio = pula o mês, não desloca) |
+| média | Milhar pt-BR sem decimal (`1.850`) virava `1,85` (~1000× menor) | `numeroIndice()` local: `\d{1,3}(\.\d{3})+` sem vírgula → inteiro (não mexe no `numero()` global das obras) |
+| média | Commit em loop **não-transacional** → import parcial em falha/timeout | envolto em `tx()` (all-or-nothing) + teto de 6000 pontos/lote |
+| média | Flag `truncado` (corte em 5000 linhas) nunca exibida na UI | aviso na prévia e no resultado |
+| baixa | `HEADER_RE` com `.some` descartava linha cujo índice inline colidisse com palavra reservada | trocado por `.every` (só descarta linha 100% de cabeçalho) |
+| baixa | Race: prévia em voo sobrescrevia texto já editado | `textarea` desabilitado durante a requisição |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ **157 testes JS** (parser 17→**27** com as regressões dos fixes) · build 30 módulos |
+| live (servidor real :3010) | ✅ 14/14 pré-review + fixes confirmados live: 3-col→100,50 · matriz vazia (Jan=100/Fev=nulo/Mar=102) · milhar→1850 · idempotência via `tx` · overflow barrado no parse (ponto válido entra) · lote>6000→400 |
+| UI ao vivo (branch dev) | ✅ prévia "5 válidos + 1 erro" · import "5 inseridos" · lista recarrega (→9) · console limpo |
+| Limpeza | ✅ pontos + logs de teste removidos |
+
+### Para o Cowork
+> Loader em lote de índices no ar — **carregar a série SINAPI/INCC real vira um paste** (por
+> competência, 3 colunas de planilha, ou matriz anual), idempotente e transacional. Uma revisão
+> adversarial por workflow pegou **7 defeitos** antes do commit, sendo 2 de corrupção **silenciosa**
+> (colagem de 3 colunas virando matriz; célula vazia deslocando meses) — o parser agora falha alto ou
+> desambigua em vez de adivinhar. **Bloqueio que permanece:** os *valores* oficiais do SINAPI/INCC —
+> quando tiverem o arquivo, é só colar na aba Cadastros. Próximo do backlog que depende de dados:
+> robustez do parser de PDF (precisa dos orçamentos reais em layouts variados).
