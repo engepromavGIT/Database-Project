@@ -1187,3 +1187,70 @@ consolidei manualmente pelo journal:
 > o código antes da migration 012) apagaria a tela toda — isolei como os anexos. **Cobertura funcional
 > agora ~33/44 feitos**; o que resta são parciais implementáveis (EAP editável, validação na prévia,
 > custo/m² por categoria, desvio de prazo…) e os bloqueios de dados/infra já mapeados na auditoria.
+
+---
+
+# 📋 RESUMO DA SESSÃO — 2026-07-13 (para o Cowork)
+
+> As seções acima estão fora de ordem cronológica (anexadas em pontos diferentes). Esta é a
+> visão consolidada da sessão. **Tudo commitado e com push na `origin/main`** (github
+> engepromavGIT/Database-Project). Migrations aplicadas **só na branch dev** (`ep-restless-dawn-af2pfvm7`).
+
+## O que foi entregue (6 frentes)
+| Commit(s) | Frente | Verificação |
+|-----------|--------|-------------|
+| `c5ed816` | **Dashboard com filtros (RF-G01)** — `/api/dashboard` aceita tipo/padrão/localidade/cliente/status/elegível/área/data-base + barra no Painel | 13/13 live + UI |
+| `b491ac4` `e3e6b83` | **Cronograma / Curva S (RF-B05)** — previsto × realizado (função pura `curvaS.js`, medições, SVG) + **revisão adversarial (6 correções)** | 37 unit · 26/26 live · UI |
+| `c4d73e3` | **Reimportação idempotente (RF-C04)** — `confirmar` atualiza por `codigo` em vez de duplicar; prévia marca "já existe" + toggle | 10/10 live + UI |
+| `74f9894` | **Importador de índices em lote (RF-A06)** — cola a série (competência/3-col/matriz anual) → upsert transacional + **revisão adversarial (7 defeitos)** | 27 unit · 14/14 live · UI |
+| `0f6532f` | **Produtividade por serviço (RF-D05)** — R$/m², qtd/m², h/m² (campo horas opcional, migration 012) + **revisão adversarial (3 correções)** | 23 unit · 11/11 live · UI |
+| (workflow) | **Auditoria de cobertura** — 5 auditores cruzaram cada RF com o código | mapa completo abaixo |
+
+Cada frente seguiu: implementação → **verificação live** (servidor real :3010, tokens mintados,
+dados de teste sempre limpos) → **verificação de UI** no navegador (branch dev) → **revisão
+adversarial por workflow** antes do commit. Os reviews pegaram bugs/regressões reais que os testes
+não pegavam — p.ex.: race que podia **excluir a medição da obra errada** (RF-B05); colagem de 3
+colunas virando matriz com **corrupção silenciosa** (RF-A06); produtividade acoplada ao carregamento
+de EAP/ABC que **apagaria a tela** se o endpoint falhasse (RF-D05). `numOrNull(null)===0` (RF-B05) e
+o padrão milhar pt-BR (RF-A06) também foram achados de corrupção silenciosa corrigidos.
+
+## Cobertura funcional (auditoria)
+- **Essenciais (E): 16/21 feitos.** Parciais: **B02** (EAP: hierarquia/ordem não editáveis pela UI),
+  **C01/C02** (validação/"linhas inválidas" só aparecem pós-confirmar, não na prévia; PDF só via ETL
+  Python, não na web), **D02** (custo/m² só total — falta por etapa/categoria), **D03** (desvio de
+  **prazo** calculado mas não exibido como %).
+- **Importantes (I): 16/22 feitos.** Parciais: **B06** (não há **upload** de anexo no app — só leitura;
+  entra via ETL), **B08** (auditoria sem diff antes/depois nem filtro por registro), **C03** (conciliação
+  só no compositor de estimativa, não na importação), **F02** (só 2 dos 4 métodos têm motor: falta
+  'combinada' e 'analoga' distinta), **H03** (API de integração sem doc/OpenAPI), **H04** (clientes em
+  tabela nova = registro paralelo).
+- **Desejáveis (D): 1/1** ✅ (D05 fechado nesta sessão).
+- **Testes:** `npm test` = **180** casos (sem banco) · `npm run test:py` = 11 (pytest do ETL).
+
+## Estado do banco (branch dev)
+Migrations **001→012** aplicadas. A 011 (medições/curva S: baseline + `UNIQUE(obra,competência)` +
+CHECK) e a 012 (`itens_custo.horas`) foram adicionadas nesta sessão. **Produção (main) nunca migrada.**
+
+## Pendências — dá para fazer no código (sem dados externos), por prioridade
+1. **RF-D03** [E, baixo] — exibir o **% de desvio de prazo** (a view já tem `prazo_real_dias`/`prazo_plan_dias`).
+2. **RF-F04** [E, baixo] — bottom-up não grava `nivel_confianca_pct` (só a paramétrica).
+3. **RF-D02** [E, médio] — custo/m² **por categoria** (itens_custo.categoria_id permite agregar).
+4. **RF-B02** [E, médio] — tornar **hierarquia/ordem da EAP editáveis** na UI (o POST já aceita, o PUT e o form não).
+5. **RF-C02/C01** [E, médio/alto] — antecipar validação + "linhas inválidas" para a **prévia**; PDF na web.
+6. **RF-B06** [I, médio] — **upload** de anexo no app (não existe `POST /obras/:id/anexos`).
+7. **RF-F05** [I, baixo] — exibir a **faixa O–P de prazo** (já calculada/persistida).
+
+## Pendências — bloqueadas por dados/infra (ação do usuário/Cowork)
+- **Série SINAPI/INCC oficial** — o importador em lote já existe; **é só colar** os valores na aba
+  Cadastros (hoje o seed é placeholder base 100 → fator ≈ 1).
+- **PDFs reais** em layouts variados — para robustez do parser (`scripts/importar_orcamento.py`) e o
+  anexo de 38 MB do MAPP-6219.
+- **Composições SINAPI/SICRO** reais — para a conciliação (RF-C03) casar contra base oficial.
+
+## Ações do usuário recomendadas (repetidas de sessões anteriores — ainda pendentes)
+1. **Trocar o `JWT_SECRET`** do `.env` local (hoje é um fragmento da senha do banco) pelo **segredo
+   real do app Promav** — sem isso os logins não são compatíveis com o SSO (RF-H01).
+2. **Rotacionar a credencial do Neon** — circulou em texto no `.env`/handoffs.
+3. **Aplicar as migrations 001→012 na produção** (em janela controlada, com sonda somente-leitura
+   antes de escrever) — hoje só a dev está migrada. Conferir de onde saiu a connection string de
+   **produção** que circulou (quase-acidente já registrado).
