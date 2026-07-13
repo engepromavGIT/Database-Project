@@ -1037,3 +1037,52 @@ realizado em vermelho no estouro) + tabela + mini-CRUD de medições (com toggle
 > a comunicar ao usuário:** avanço físico = % **acumulado**; desembolso = valor **do mês**. Limitação
 > conhecida (v1): o % financeiro é **nominal** (não deflaciona por RF-D01). Próximos de código:
 > reimportação idempotente (RF-C04).
+
+---
+
+## Atualização 2026-07-13 — revisão adversarial do RF-B05 (6 correções) + RF-C04
+
+### Revisão adversarial da Curva S (workflow: 5 dimensões → verificação → síntese)
+Rodada a pedido, depois do commit do RF-B05. 9 achados → **7 confirmados** (2 races fundidos →
+6 correções); 2 falsos-positivos corretamente rejeitados (CHECK/dedup da migration 011 —
+inalcançáveis com `medicoes` vazia). Todas as 6 aplicadas (commit `e3e6b83`):
+
+| # | Sev | Correção |
+|---|-----|----------|
+| 1 | média | **Race ao trocar de obra:** `ObraDetalhe` sem `key` reusava a instância; uma resposta async obsoleta podia exibir — e o `remover(m)` **excluir** — medição da obra errada. Fix: `key={sel.id}` no Acervo (força remount; fecha as corridas de CurvaS + etapas/abc + atualização monetária). |
+| 2 | média | **`PUT /medicoes` zerava `observacao`** (o front não a envia). Fix: fora do UPDATE, como o `origem` dos realizados. Verificado live (nota preservada). |
+| 3 | baixa | checkbox `comBase` preso ligado → reset em `limpar()`/`editar()`. |
+| 4 | baixa | `yMaxPct` inflava o eixo do **Físico** no estouro financeiro → físico usa `yMax=100`. |
+| 5 | baixa | série de previsto de **1 ponto** invisível (polyline não desenha) → círculos também no previsto. |
+| 6 | baixa | `curvaS({plano:null})` **lançava** (contrato "nunca lança") → guarda `p = plano || {}` + teste. |
+
+**Verificação:** check ✅ · **130 testes JS** (curva S 35→**37**) · build ✅ · fix do `observacao` live 5/5.
+
+### Reimportação idempotente (RF-C04, US-24)
+O `POST /api/importacao/confirmar` só fazia INSERT — e com o `UNIQUE(obras.codigo)` (migration 009)
+reimportar o mesmo código **falhava com 409**. Agora é **idempotente por chave (`codigo`)**:
+
+- **`confirmar`**: para cada linha, se o `codigo` já existe → **UPDATE** dos campos que o importador
+  fornece (preserva cliente/pavimentos/datas de plano/status editados à mão); senão INSERT.
+  `modo='pular'` mantém as existentes intactas. Resposta: `{ inseridas, atualizadas, puladas, total, erros }`.
+- **`analisar`**: sinaliza quais códigos já existem (cada linha da prévia ganha `existe`; total `jaExistem`).
+- **Front (`Importar.jsx`)**: coluna **Situação** (chip "já existe" / "nova"), aviso "N já existem" +
+  toggle **"Atualizar as obras existentes"** (default), e resultado "X inserida(s) · Y atualizada(s)".
+
+**Verificação:**
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ 130 testes JS · build 30 módulos |
+| idempotência live (servidor real :3010) | ✅ **10/10**: 1ª import 2 inseridas; reimport 2 atualizadas (sem duplicar); `modo='pular'` 2 puladas (inalteradas); mix 1+1; linha sem código → erro; **reimport preserva status/pavimentos não-importados** |
+| UI ao vivo (branch dev, upload de CSV real) | ✅ 1ª import "1 inserida"; reimport → prévia marca "já existe" + toggle + "0 inserida · 1 atualizada"; banco com **1 obra** (sem duplicata), valores atualizados |
+| Limpeza | ✅ obra de teste + logs removidos |
+
+### Para o Cowork
+> Fechado o ciclo do RF-B05 com **revisão adversarial** (6 correções, com destaque para uma race
+> real que podia excluir a medição da obra errada — resolvida com `key` por obra no Acervo) e
+> implementado o **RF-C04**: reimportar o mesmo CSV/Excel agora **atualiza** a obra em vez de
+> duplicar/falhar (idempotência por `codigo`), com prévia sinalizando o que já existe e toggle
+> pular/atualizar. O UPDATE só toca nos campos do importador — edições manuais (cliente, status,
+> pavimentos, datas de plano) são preservadas. Observação: a idempotência é do importador **web**
+> (CSV/Excel); o ETL Python de PDF já dedupava por código na gravação. Módulo C fica completo no
+> app (resta só o que depende de PDFs reais para robustez do parser).
