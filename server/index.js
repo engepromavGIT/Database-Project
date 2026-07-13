@@ -8,7 +8,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import * as XLSX from 'xlsx'
-import { q } from './db.js'
+import { q, tx } from './db.js'
 import { requireAuth, requireAdmin, registrarLog, signToken, verifyPassword } from './auth.js'
 import { fatorAtualizacao, atualizarValor, chaveMes, custoM2, ajusteRegional } from './estimativa/normalizacao.js'
 import { escoreSimilaridade } from './estimativa/similaridade.js'
@@ -17,6 +17,7 @@ import {
   coefVariacao, nivelConfianca, rotuloConfianca,
 } from './estimativa/metodos.js'
 import { mapearCabecalho, montarLinha, validarLinha } from './importacao/mapear.js'
+import { parseSerieIndices } from './importacao/indices.js'
 import { conciliarLista } from './importacao/conciliar.js'
 import { registrarObraDetalhe } from './obraDetalhe.js'
 
@@ -466,6 +467,38 @@ app.delete('/api/indices-economicos/:id', requireAdmin, wrap(async (req, res) =>
   if (!del.length) return res.status(404).json({ error: 'Ponto de índice não encontrado.' })
   await registrarLog(req, 'delete', 'indice', req.params.id)
   res.json({ ok: true })
+}))
+// Importação em lote de série (RF-A06): cola texto (competência+valor ou matriz anual) e
+// carrega de uma vez. Idempotente por (indice,ano,mes) — reimportar ATUALIZA o valor.
+// dryRun=true devolve a prévia (total + amostra + erros) sem gravar.
+app.post('/api/indices-economicos/importar', requireAdmin, wrap(async (req, res) => {
+  const texto = req.body?.texto
+  if (typeof texto !== 'string' || !texto.trim()) return res.status(400).json({ error: 'Cole a série de índices.' })
+  const indice = typeof req.body?.indice === 'string' ? req.body.indice : ''
+  const { pontos, erros, truncado } = parseSerieIndices(texto, indice)
+  const indicesDistintos = [...new Set(pontos.map((p) => p.indice))]
+  if (req.body?.dryRun) {
+    return res.json({ dryRun: true, total: pontos.length, amostra: pontos.slice(0, 20), indices: indicesDistintos, erros: erros.slice(0, 100), truncado })
+  }
+  if (!pontos.length) return res.status(400).json({ error: 'Nenhum ponto válido para importar.', erros: erros.slice(0, 100) })
+  // Teto de pontos por lote (a matriz anual multiplica linhas × 12): evita milhares de
+  // INSERTs num request só. Décadas de série mensal cabem folgado.
+  if (pontos.length > 6000) return res.status(400).json({ error: `Lote grande demais (${pontos.length} pontos; máx 6000). Divida a série.` })
+  // Tudo-ou-nada: um erro no meio (ex.: overflow) faz rollback do lote inteiro (sem import parcial).
+  let inseridos = 0, atualizados = 0
+  await tx(async (client) => {
+    for (const p of pontos) {
+      const { rows } = await client.query(
+        `INSERT INTO orcamento.indices_economicos (id, indice, ano, mes, valor)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (indice, ano, mes) DO UPDATE SET valor = EXCLUDED.valor
+         RETURNING (xmax = 0) AS inserido`,
+        [genId('idx'), p.indice, p.ano, p.mes, p.valor])
+      if (rows[0]?.inserido) inseridos++; else atualizados++
+    }
+  })
+  await registrarLog(req, atualizados > 0 ? 'update' : 'create', 'indice', null)
+  res.json({ inseridos, atualizados, total: pontos.length, indices: indicesDistintos, erros: erros.slice(0, 100), truncado })
 }))
 
 // ----- Serviços/composições (RF-A05): escrita admin. GET aberto acima. Sem DELETE físico —

@@ -110,6 +110,8 @@ export const api = {
   createIndice: (data) => req('POST', '/indices-economicos', data),
   updIndice: (id, data) => req('PUT', `/indices-economicos/${id}`, data),
   delIndice: (id) => req('DELETE', `/indices-economicos/${id}`),
+  // Importação em lote da série (RF-A06). dryRun=true → prévia (não grava).
+  importarIndices: (texto, indice, dryRun) => req('POST', '/indices-economicos/importar', { texto, indice, dryRun }),
 
   // ----- obras / indicadores / dashboard -----
   obras: (filtros) => {
