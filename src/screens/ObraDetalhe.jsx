@@ -28,7 +28,7 @@ const fmtBytes = (b) => {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`
 }
 
-const ITEM_VAZIO = { servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '', categoriaId: '' }
+const ITEM_VAZIO = { servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '', categoriaId: '', horas: '' }
 
 // RF-D01 — Atualização monetária: leva os custos da obra a uma data-base alvo via índice.
 function AtualizacaoMonetaria({ obra }) {
@@ -287,10 +287,50 @@ function CurvaS({ obra }) {
   )
 }
 
+// RF-D05 — Produtividade / indicadores por serviço: R$/m², qtd/m², h/m² (h só quando há horas).
+function Produtividade({ prod }) {
+  if (!prod || !prod.porServico?.length) return null
+  const { porServico, porCategoria, total, semArea, temHoras } = prod
+  const money = (v) => (v == null ? '—' : brl(v))
+  const q = (v) => (v == null ? '—' : num(v, 4))
+  const h = (v) => (v == null ? '—' : num(v, 2))
+  return (
+    <section style={{ border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+        <strong style={{ fontSize: 13 }}>Produtividade (indicadores por serviço)</strong>
+        <span style={{ fontSize: 12, color: 'var(--fg-3)' }}>
+          {semArea
+            ? 'Sem área construída → R$/m² e /m² indisponíveis (informe a área da obra).'
+            : `área ${num(prod.area, 2)} m² · total ${money(total.custo)} (${money(total.custoM2)}/m²${temHoras ? ` · ${h(total.horasM2)} h/m²` : ''})`}
+        </span>
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 6 }}>
+        <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+          <th>Serviço</th><th>Un.</th><th>Qtd.</th><th>R$/m²</th><th>Qtd/m²</th>{temHoras && <th>h/m²</th>}<th>% custo</th>
+        </tr></thead>
+        <tbody>
+          {porServico.map((s, i) => (
+            <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+              <td title={s.label}>{corta(s.label, 40)}</td><td>{s.unidade || '—'}</td><td>{num(s.quantidade, 2)}</td>
+              <td>{money(s.custoM2)}</td><td>{q(s.qtdM2)}</td>{temHoras && <td>{h(s.horasM2)}</td>}<td>{s.pctCusto == null ? '—' : `${num(s.pctCusto, 2)}%`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {porCategoria.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6 }}>
+          Por categoria: {porCategoria.map((c) => `${c.label} ${money(c.custoM2)}/m² (${c.pctCusto == null ? '—' : `${num(c.pctCusto, 2)}%`})`).join(' · ')}
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [etapas, setEtapas] = useState([])
   const [servicos, setServicos] = useState([])
   const [abc, setAbc] = useState([])
+  const [prod, setProd] = useState(null)
   const [anexos, setAnexos] = useState([])
   const [sel, setSel] = useState(null)
   const [itens, setItens] = useState([])
@@ -304,6 +344,9 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [erro, setErro] = useState(null)
 
   const recarregar = async () => {
+    // Produtividade é acessória (indicadores): sua falha (ex.: migration 012 pendente → 500)
+    // não pode derrubar EAP + Curva ABC nem quebrar o refresh pós-CRUD. Isolada como os anexos.
+    api.produtividade(obra.id).then(setProd).catch(() => setProd(null))
     try {
       const [e, a] = await Promise.all([api.obraEtapas(obra.id), api.curvaAbc(obra.id)])
       setEtapas(e); setAbc(a)
@@ -346,12 +389,14 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
     setNovoItem({
       servicoRefId: i.servicoRefId || '', descricao: i.descricao || '', unidade: i.unidade || '',
       quantidade: String(i.quantidade ?? ''), custoUnitario: String(i.custoUnitario ?? ''), categoriaId: i.categoriaId || '',
+      horas: i.horas == null ? '' : String(i.horas),
     })
   }
   const salvarItem = () => acao(async () => {
     const dados = {
       servicoRefId: novoItem.servicoRefId || null, descricao: novoItem.descricao || null, unidade: novoItem.unidade || null,
       quantidade: Number(novoItem.quantidade), custoUnitario: Number(novoItem.custoUnitario), categoriaId: novoItem.categoriaId || null,
+      horas: novoItem.horas === '' ? null : Number(novoItem.horas),
     }
     if (editItemId) await api.updItem(editItemId, dados)
     else await api.addItem(sel, dados)
@@ -460,6 +505,8 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
         </div>
       </div>
 
+      <Produtividade prod={prod} />
+
       {/* Itens + realizados da etapa selecionada */}
       {sel && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-4)', marginTop: 'var(--sp-4)' }}>
@@ -483,13 +530,14 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
                 {itens.length === 0 && <tr><td colSpan="6" className="empty">Sem itens.</td></tr>}
               </tbody>
             </table>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 60px 80px auto', gap: 4, marginTop: 6 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 60px 80px 56px auto', gap: 4, marginTop: 6 }}>
               <select className="control" value={novoItem.servicoRefId} onChange={(e) => escolherServico(e.target.value)}>
                 <option value="">{novoItem.descricao ? novoItem.descricao : 'serviço…'}</option>{servicos.map((s) => <option key={s.id} value={s.id}>{s.descricao}</option>)}
               </select>
               <input className="control" placeholder="un." value={novoItem.unidade} onChange={(e) => setNovoItem((f) => ({ ...f, unidade: e.target.value }))} />
               <input className="control" type="number" placeholder="qtd" value={novoItem.quantidade} onChange={(e) => setNovoItem((f) => ({ ...f, quantidade: e.target.value }))} />
               <input className="control" type="number" placeholder="R$/un" value={novoItem.custoUnitario} onChange={(e) => setNovoItem((f) => ({ ...f, custoUnitario: e.target.value }))} />
+              <input className="control" type="number" min="0" step="0.01" placeholder="horas" title="Homem-hora (opcional) — alimenta h/m²" value={novoItem.horas} onChange={(e) => setNovoItem((f) => ({ ...f, horas: e.target.value }))} />
               <div style={{ display: 'flex', gap: 4 }}>
                 <button className="btn btn-secondary btn-sm" onClick={salvarItem} disabled={!(Number(novoItem.quantidade) > 0 && Number(novoItem.custoUnitario) > 0)}>{editItemId ? 'Salvar' : '+'}</button>
                 {editItemId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={cancelarItem}>✕</button>}

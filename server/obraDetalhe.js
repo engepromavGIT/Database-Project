@@ -5,9 +5,18 @@ import { q } from './db.js'
 import { requireAuth, registrarLog } from './auth.js'
 import { curvaABC } from './curvaABC.js'
 import { curvaS } from './curvaS.js'
+import { produtividade } from './produtividade.js'
 
 const genId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+
+// Horas (homem-hora) de um item — opcional (RF-D05). '' / null → null; senão número ≥ 0.
+// Retorna { ok, val }; ok=false quando informado mas inválido/negativo.
+function parseHoras(v) {
+  if (v == null || v === '') return { ok: true, val: null }
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? { ok: true, val: n } : { ok: false, val: null }
+}
 
 // Medições (RF-B05): normaliza 'AAAA-MM'/'AAAA-MM-DD' para o 1º dia do mês; null se inválido.
 function mesPrimeiroDia(v) {
@@ -114,7 +123,7 @@ export function registrarObraDetalhe(app) {
   app.get('/api/etapas/:id/itens', requireAuth, wrap(async (req, res) => {
     res.json(await q(
       `SELECT id, descricao, unidade, quantidade, custo_unitario AS "custoUnitario",
-              custo_total AS "custoTotal", servico_ref_id AS "servicoRefId", categoria_id AS "categoriaId"
+              custo_total AS "custoTotal", servico_ref_id AS "servicoRefId", categoria_id AS "categoriaId", horas
        FROM orcamento.itens_custo WHERE etapa_id = $1 ORDER BY descricao`, [req.params.id]))
   }))
 
@@ -123,11 +132,13 @@ export function registrarObraDetalhe(app) {
     if (!(Number(quantidade) > 0) || !(Number(custoUnitario) > 0)) {
       return res.status(400).json({ error: 'Informe quantidade e custo unitário.' })
     }
+    const horas = parseHoras(req.body?.horas)
+    if (!horas.ok) return res.status(400).json({ error: 'Horas inválidas (informe um número ≥ 0).' })
     const id = genId('itm')
     await q(
-      `INSERT INTO orcamento.itens_custo (id, etapa_id, servico_ref_id, categoria_id, descricao, unidade, quantidade, custo_unitario)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, req.params.id, servicoRefId, categoriaId, descricao, unidade, Number(quantidade), Number(custoUnitario)])
+      `INSERT INTO orcamento.itens_custo (id, etapa_id, servico_ref_id, categoria_id, descricao, unidade, quantidade, custo_unitario, horas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, req.params.id, servicoRefId, categoriaId, descricao, unidade, Number(quantidade), Number(custoUnitario), horas.val])
     const obraId = await etapaObraId(req.params.id)
     if (obraId) await recalcularObra(obraId)
     await registrarLog(req, 'create', 'item', id)
@@ -148,13 +159,15 @@ export function registrarObraDetalhe(app) {
     if (!(Number(quantidade) > 0) || !(Number(custoUnitario) > 0)) {
       return res.status(400).json({ error: 'Informe quantidade e custo unitário.' })
     }
+    const horas = parseHoras(req.body?.horas)
+    if (!horas.ok) return res.status(400).json({ error: 'Horas inválidas (informe um número ≥ 0).' })
     const [it] = await q('SELECT etapa_id FROM orcamento.itens_custo WHERE id = $1', [req.params.id])
     if (!it) return res.status(404).json({ error: 'Item não encontrado.' })
     await q(
       `UPDATE orcamento.itens_custo
-         SET descricao = $2, unidade = $3, quantidade = $4, custo_unitario = $5, servico_ref_id = $6, categoria_id = $7
+         SET descricao = $2, unidade = $3, quantidade = $4, custo_unitario = $5, servico_ref_id = $6, categoria_id = $7, horas = $8
        WHERE id = $1`,
-      [req.params.id, descricao, unidade, Number(quantidade), Number(custoUnitario), servicoRefId, categoriaId])
+      [req.params.id, descricao, unidade, Number(quantidade), Number(custoUnitario), servicoRefId, categoriaId, horas.val])
     const obraId = await etapaObraId(it.etapa_id)
     if (obraId) await recalcularObra(obraId)
     await registrarLog(req, 'update', 'item', req.params.id)
@@ -214,6 +227,22 @@ export function registrarObraDetalhe(app) {
        FROM orcamento.itens_custo i JOIN orcamento.etapas e ON e.id = i.etapa_id
        WHERE e.obra_id = $1`, [req.params.id])
     res.json(curvaABC(itens.map((i) => ({ id: i.id, descricao: i.descricao, custoTotal: Number(i.custoTotal) }))))
+  }))
+
+  // ----- Produtividade / indicadores por serviço (RF-D05): R$/m², qtd/m², h/m² -----
+  app.get('/api/obras/:id/produtividade', requireAuth, wrap(async (req, res) => {
+    const [obra] = await q('SELECT area_construida_m2 AS area FROM orcamento.obras WHERE id = $1', [req.params.id])
+    if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+    const itens = await q(
+      `SELECT i.servico_ref_id AS "servicoRefId", sr.descricao AS "servicoNome",
+              i.descricao, i.unidade, i.quantidade, i.custo_total AS "custoTotal", i.horas,
+              i.categoria_id AS "categoriaId", c.nome AS "categoriaNome"
+       FROM orcamento.itens_custo i
+       JOIN orcamento.etapas e ON e.id = i.etapa_id
+       LEFT JOIN orcamento.servicos_ref sr ON sr.id = i.servico_ref_id
+       LEFT JOIN orcamento.categorias_custo c ON c.id = i.categoria_id
+       WHERE e.obra_id = $1`, [req.params.id])
+    res.json(produtividade({ itens, area: obra.area }))
   }))
 
   // ----- Cronograma físico-financeiro / Curva S (RF-B05) -----

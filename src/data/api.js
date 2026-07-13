@@ -145,6 +145,8 @@ export const api = {
   updRealizado: (id, data) => req('PUT', `/realizados/${id}`, data),
   delRealizado: (id) => req('DELETE', `/realizados/${id}`),
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
+  // produtividade / indicadores por serviço (RF-D05): R$/m², qtd/m², h/m²
+  produtividade: (obraId) => req('GET', `/obras/${obraId}/produtividade`),
 
   // ----- cronograma físico-financeiro / curva S (RF-B05) -----
   curvaS: (obraId) => req('GET', `/obras/${obraId}/curva-s`),
