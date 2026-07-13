@@ -1134,3 +1134,56 @@ ambiguidades de formato *gravando dado errado em silêncio* (validação só con
 > desambigua em vez de adivinhar. **Bloqueio que permanece:** os *valores* oficiais do SINAPI/INCC —
 > quando tiverem o arquivo, é só colar na aba Cadastros. Próximo do backlog que depende de dados:
 > robustez do parser de PDF (precisa dos orçamentos reais em layouts variados).
+
+---
+
+## Atualização 2026-07-13 — auditoria de cobertura (workflow) + produtividade por serviço (RF-D05)
+
+### Auditoria de cobertura (workflow: 5 auditores por módulo → síntese)
+Cruzou cada RF dos docs com o código real (evidência por rota/tela/migration). Resultado:
+**funcionais 32/44 feitos** — E: 16/21 (5 parciais: B02 EAP editável, C01/C02 validação na prévia +
+PDF na web, D02 custo/m² por etapa/categoria, D03 desvio de prazo), I: 16/22, D: 0/1 (**D05 ausente**).
+Nenhum E/I totalmente ausente. Bloqueado por dados: série SINAPI/INCC real, composições SINAPI,
+PDFs reais. Riscos de infra: JWT_SECRET real (SSO), migrations em produção, rotação da credencial
+Neon, RBAC binário, auditoria best-effort (não append-only).
+
+### RF-D05 — Produtividade / indicadores por serviço
+Último RF funcional que faltava (prioridade D, "quando os dados permitirem"). A auditoria confirmou
+que **R$/m² e qtd/m² já eram computáveis** (itens + área), mas **h/m² estava bloqueado (sem campo de
+horas)**. Implementei completo: campo de horas opcional + a tela de produtividade.
+
+**Migration 012:** `itens_custo.horas numeric(14,2)` NULLABLE + CHECK `horas >= 0` (idempotente).
+**Função pura `server/produtividade.js`** (molde de curvaABC, nunca lança): agrega os itens por
+**serviço** (servico_ref_id + unidade, ou descrição+unidade) e por **categoria**; deriva **R$/m²,
+qtd/m², h/m²** (h só quando há horas) + % do custo; sem área → "/m²" null. **23 testes**.
+**Endpoint** `GET /api/obras/:id/produtividade` + `horas` opcional no POST/PUT/GET de itens.
+**UI:** seção "Produtividade (indicadores por serviço)" no ObraDetalhe + input de horas no form de item.
+
+### Revisão adversarial (workflow, 3 dimensões → verificação) — 3 achados reais, corrigidos
+A síntese final do workflow falhou (retry cap), mas os 11 agentes de review+verificação concluíram;
+consolidei manualmente pelo journal:
+
+| Sev | Achado | Correção |
+|-----|--------|----------|
+| **média** | `recarregar()` acoplou produtividade ao `Promise.all` de etapas/ABC → se o endpoint falhar (ex.: migration 012 pendente em prod), **EAP + Curva ABC somem** e o refresh pós-CRUD quebra | isolada em promise/catch próprio (como os anexos): falha só oculta a seção de produtividade |
+| baixa | `qtd/m²` somava quantidades de unidades diferentes sob o mesmo serviço (GIGO) | unidade entra na chave de agrupamento → nunca soma unidades incompatíveis (fluxo normal inalterado) |
+| baixa | `produtividade({itens:[null]})` lançava (viola "nunca lança") | guard `if (it == null) continue` + teste |
+| — | **Rejeitados:** troca de obra (falso-positivo — `key={sel.id}` já remonta); `parseHoras` frouxo (convenção `Number()` de todo o módulo, front-safe) | — |
+
+### Verificação
+| Etapa | Resultado |
+|-------|-----------|
+| check / test / build | ✅ **180 testes JS** (produtividade 18→**23** com os fixes) · build 30 módulos |
+| migration 012 | ✅ aplicada na dev |
+| live (servidor real :3010) | ✅ **11/11**: R$/m²/qtd/m²/h/m² corretos, item com/sem horas, horas negativa → 400, 404, GET itens inclui horas |
+| UI ao vivo (branch dev) | ✅ seção Produtividade renderiza (3 serviços, R$/m² · qtd/m² · h/m², % pt-BR); item com **120 h** adicionado pelo form → h/m² recalcula (total 1,00 h/m²); console limpo |
+| Limpeza | ✅ obra + logs de teste removidos |
+
+### Para o Cowork
+> Fecha o **último RF funcional** (D05). Produtividade por serviço no ObraDetalhe: R$/m², consumo/m²
+> (qtd/m²) e h/m² — este último destravado por um campo **horas opcional** por item (migration 012;
+> não afeta itens existentes). Uma revisão adversarial pegou uma **regressão real**: a produtividade
+> tinha sido acoplada ao carregamento de EAP/Curva ABC, então uma falha do endpoint novo (ex.: rodar
+> o código antes da migration 012) apagaria a tela toda — isolei como os anexos. **Cobertura funcional
+> agora ~33/44 feitos**; o que resta são parciais implementáveis (EAP editável, validação na prévia,
+> custo/m² por categoria, desvio de prazo…) e os bloqueios de dados/infra já mapeados na auditoria.
