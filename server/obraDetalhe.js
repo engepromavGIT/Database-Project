@@ -269,16 +269,18 @@ export function registrarObraDetalhe(app) {
     res.status(201).json({ id })
   }))
 
-  // Edita valores de uma medição por id. NÃO altera competencia/obra_id (evita colisão de mês).
+  // Edita valores de uma medição por id. NÃO altera competencia/obra_id (evita colisão de mês)
+  // nem observacao (o front não a envia; incluí-la a zeraria — mesmo cuidado do PUT de realizados
+  // com 'origem').
   app.put('/api/medicoes/:id', requireAuth, wrap(async (req, res) => {
     const c = medicaoCampos(req.body)
     if (!c.faixaOk) return res.status(400).json({ error: ERRO_FAIXA })
     if (!c.algumValor) return res.status(400).json({ error: ERRO_VAZIO })
     const upd = await q(
       `UPDATE orcamento.medicoes
-         SET avanco_fisico_pct=$2, avanco_plan_pct=$3, desembolso=$4, desembolso_plan=$5, observacao=$6, updated_at=now()
+         SET avanco_fisico_pct=$2, avanco_plan_pct=$3, desembolso=$4, desembolso_plan=$5, updated_at=now()
        WHERE id=$1 RETURNING id`,
-      [req.params.id, c.av.val, c.avP.val, c.d.val, c.dP.val, c.observacao])
+      [req.params.id, c.av.val, c.avP.val, c.d.val, c.dP.val])
     if (!upd.length) return res.status(404).json({ error: 'Medição não encontrada.' })
     await registrarLog(req, 'update', 'medicao', req.params.id)
     res.json({ id: req.params.id })

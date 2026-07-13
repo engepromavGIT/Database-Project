@@ -287,7 +287,9 @@ export function Acervo({ user }) {
           )}
         </section>
 
-        {sel && <ObraDetalhe obra={sel} onClose={() => setSel(null)} onChanged={recarregar} />}
+        {/* key por obra: força remount ao trocar de obra, descartando respostas async pendentes
+            da obra anterior (evita corrida que exibiria/excluiria dados da obra errada). */}
+        {sel && <ObraDetalhe key={sel.id} obra={sel} onClose={() => setSel(null)} onChanged={recarregar} />}
 
         <section className="card" style={{ padding: 'var(--sp-4)' }}>
           <div className="eyebrow">Indicadores (custo/m² e prazos)</div>

@@ -112,7 +112,7 @@ function CurvaS({ obra }) {
   }, [obra.id])
 
   const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
-  const limpar = () => { setEditId(null); setForm(MED_VAZIA) }
+  const limpar = () => { setEditId(null); setForm(MED_VAZIA); setComBase(false) }
   const editar = (m) => {
     setEditId(m.id)
     setForm({
@@ -120,7 +120,8 @@ function CurvaS({ obra }) {
       avancoFisicoPct: m.avancoFisicoPct ?? '', desembolso: m.desembolso ?? '',
       avancoPlanPct: m.avancoPlanPct ?? '', desembolsoPlan: m.desembolsoPlan ?? '',
     })
-    if (m.avancoPlanPct != null || m.desembolsoPlan != null) setComBase(true)
+    // incondicional: uma medição sem linha de base deve DESligar o toggle (não só ligar).
+    setComBase(m.avancoPlanPct != null || m.desembolsoPlan != null)
   }
   const numOr = (v) => (String(v).trim() === '' ? null : Number(v))
   const temValor = [form.avancoFisicoPct, form.desembolso, comBase ? form.avancoPlanPct : '', comBase ? form.desembolsoPlan : '']
@@ -156,9 +157,13 @@ function CurvaS({ obra }) {
   const prevKey = !isFin ? 'prevFisicoPct' : (temBaseFin ? 'prevFinanceiroPct' : 'prevFinanceiro')
   const realKey = !isFin ? 'realFisicoPct' : (temBaseFin ? 'realFinanceiroPct' : 'realFinanceiro')
   const emPct = !isFin || temBaseFin
-  const yMax = emPct
-    ? (curva?.yMaxPct || 100)
-    : Math.max(1, ...pontos.map((p) => Math.max(Number(p.prevFinanceiro) || 0, Number(p.realFinanceiro) || 0)))
+  // Físico é 0..100 (CHECK) → eixo fixo em 100 (yMaxPct pode vir inflado por estouro financeiro).
+  // Financeiro com base → yMaxPct (acomoda estouro); sem base → escala pelos R$ acumulados.
+  const yMax = !isFin
+    ? 100
+    : temBaseFin
+      ? (curva?.yMaxPct || 100)
+      : Math.max(1, ...pontos.map((p) => Math.max(Number(p.prevFinanceiro) || 0, Number(p.realFinanceiro) || 0)))
   const estouro = isFin && temBaseFin && pontos.some((p) => p.realFinanceiroPct != null && p.realFinanceiroPct > 100)
   const corReal = estouro ? 'var(--danger)' : 'var(--brand)'
 
@@ -202,7 +207,9 @@ function CurvaS({ obra }) {
             ))}
             {prevPath && <polyline points={prevPath} fill="none" stroke="var(--fg-3)" strokeWidth="1.5" strokeDasharray="5 4" />}
             {realPath && <polyline points={realPath} fill="none" stroke={corReal} strokeWidth="2" />}
-            {pontos.map((p, i) => (p[realKey] != null ? <circle key={i} cx={px(i)} cy={py(p[realKey])} r="2.5" fill={corReal} /> : null))}
+            {/* círculos nos dois (torna visível também uma série de 1 ponto, que a polyline não desenha) */}
+            {pontos.map((p, i) => (p[prevKey] != null ? <circle key={`p${i}`} cx={px(i)} cy={py(p[prevKey])} r="2" fill="var(--fg-3)" /> : null))}
+            {pontos.map((p, i) => (p[realKey] != null ? <circle key={`r${i}`} cx={px(i)} cy={py(p[realKey])} r="2.5" fill={corReal} /> : null))}
           </svg>
 
           <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', fontSize: 12, color: 'var(--fg-3)', marginTop: 4 }}>

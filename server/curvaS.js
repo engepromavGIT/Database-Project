@@ -35,7 +35,8 @@ const indexMes = (idx) => `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padS
 
 export function curvaS({ medicoes = [], plano = {}, custosRealizados = [] } = {}) {
   const avisos = []
-  const custoOrcado = numOrNull(plano.custoOrcadoTotal)
+  const p = plano || {} // default só cobre undefined; plano:null explícito precisa de guarda
+  const custoOrcado = numOrNull(p.custoOrcadoTotal)
   const temOrcado = custoOrcado != null && custoOrcado > 0
   const semBaseFinanceira = !temOrcado
 
@@ -58,8 +59,8 @@ export function curvaS({ medicoes = [], plano = {}, custosRealizados = [] } = {}
 
   // Fonte do previsto (nível obra, por precedência).
   const temBaseline = meds.some((m) => m.avPlan != null || m.desembPlan != null)
-  const inicioMes = mesDe(plano.dtInicioPlan)
-  const fimMes = mesDe(plano.dtFimPlan)
+  const inicioMes = mesDe(p.dtInicioPlan)
+  const fimMes = mesDe(p.dtFimPlan)
   const temDatasPlano = !!inicioMes && !!fimMes && mesIndex(fimMes) >= mesIndex(inicioMes)
   const previstoFonte = temBaseline ? 'baseline' : (temDatasPlano ? 'linear' : null)
 
@@ -76,7 +77,7 @@ export function curvaS({ medicoes = [], plano = {}, custosRealizados = [] } = {}
   const base = {
     previstoFonte, fonteFinanceiroRealizado, semBaseFinanceira,
     custoOrcadoTotal: custoOrcado,
-    dtInicioPlan: plano.dtInicioPlan || null, dtFimPlan: plano.dtFimPlan || null,
+    dtInicioPlan: p.dtInicioPlan || null, dtFimPlan: p.dtFimPlan || null,
     yMaxPct: 100, eixoTruncado: false, avisos,
   }
   if (!idxs.length) return { ...base, pontos: [] }

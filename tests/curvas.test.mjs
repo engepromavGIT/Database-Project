@@ -131,5 +131,14 @@ const ponto = (r, mes) => r.pontos.find((p) => p.competencia === mes)
   ok(!threw, 'dados sujos: nunca lança')
 }
 
+// ---- 9b) plano/medicoes/custosRealizados = null explícito não lança (contrato "nunca lança") ----
+// Regressão: o default de desestruturação só cobre undefined; plano:null explícito estourava.
+{
+  let threw = false
+  try { curvaS({ plano: null, medicoes: null, custosRealizados: null }) } catch { threw = true }
+  ok(!threw, 'plano/medicoes/custosRealizados null → não lança')
+  ok(curvaS({ plano: null }).pontos.length === 0, 'plano null → pontos vazios')
+}
+
 console.log(`\nCurva S: ${pass} passou, ${fail} falhou.`)
 process.exit(fail ? 1 : 0)
