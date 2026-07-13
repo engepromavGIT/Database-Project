@@ -196,5 +196,6 @@ export const api = {
     if (!res.ok) { let m = `${res.status}`; try { m = (await res.json()).error || m } catch { /* */ } throw new Error(m) }
     return res.json()
   },
-  importarConfirmar: (linhas, mapa) => req('POST', '/importacao/confirmar', { linhas, mapa }),
+  // modo: 'atualizar' (default, idempotente por código) | 'pular' (mantém existentes) — RF-C04.
+  importarConfirmar: (linhas, mapa, modo) => req('POST', '/importacao/confirmar', { linhas, mapa, modo }),
 }

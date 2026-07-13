@@ -1156,14 +1156,27 @@ app.post('/api/importacao/analisar', express.raw({ type: '*/*', limit: '25mb' })
   const headers = (matriz[0] || []).map((h) => (h == null ? '' : String(h)))
   const linhas = matriz.slice(1).filter((r) => Array.isArray(r) && r.some((c) => c != null && c !== ''))
   const mapa = mapearCabecalho(headers)
-  const previa = linhas.slice(0, 10).map((r) => montarLinha(r, mapa))
-  res.json({ headers, mapa, totalLinhas: linhas.length, previa, linhas })
+  const montadas = linhas.map((r) => montarLinha(r, mapa))
+  // RF-C04 — sinaliza quais códigos já existem no acervo (reimportação idempotente por chave):
+  // a prévia marca cada linha e o total informa quantas serão ATUALIZADAS em vez de inseridas.
+  const codigos = [...new Set(montadas.map((l) => l.codigo).filter(Boolean))]
+  const existentes = codigos.length
+    ? new Set((await q('SELECT codigo FROM orcamento.obras WHERE codigo = ANY($1::text[])', [codigos])).map((r) => r.codigo))
+    : new Set()
+  const previa = montadas.slice(0, 10).map((l) => ({ ...l, existe: !!l.codigo && existentes.has(l.codigo) }))
+  const jaExistem = montadas.filter((l) => l.codigo && existentes.has(l.codigo)).length
+  res.json({ headers, mapa, totalLinhas: linhas.length, previa, linhas, jaExistem })
 }))
 
+// RF-C04 — importação idempotente por chave (obras.codigo): reimportar a mesma obra
+// ATUALIZA o registro existente em vez de duplicar (ou falhar no UNIQUE). modo='pular'
+// deixa as existentes intactas. Só toca nos campos que o importador fornece (preserva
+// cliente/pavimentos/datas de plano/status editados à mão).
 app.post('/api/importacao/confirmar', wrap(async (req, res) => {
-  const { linhas, mapa } = req.body || {}
+  const { linhas, mapa, modo } = req.body || {}
   if (!Array.isArray(linhas) || !linhas.length || !mapa) return res.status(400).json({ error: 'Nada para importar.' })
-  let inseridas = 0
+  const atualizar = modo !== 'pular' // default: atualiza existentes (idempotente)
+  let inseridas = 0, atualizadas = 0, puladas = 0
   const erros = []
   for (let idx = 0; idx < linhas.length; idx++) {
     const l = montarLinha(linhas[idx], mapa)
@@ -1175,18 +1188,32 @@ app.post('/api/importacao/confirmar', wrap(async (req, res) => {
     if (l.municipio && l.uf) {
       localidadeId = (await q('SELECT id FROM orcamento.localidades WHERE lower(municipio) = lower($1) AND uf = $2', [l.municipio, l.uf]))[0]?.id || null
     }
-    await q(
-      `INSERT INTO orcamento.obras
-         (id, codigo, nome, tipo_obra_id, padrao_id, localidade_id, area_construida_m2, custo_real_total, custo_orcado_total,
-          dt_inicio_real, dt_fim_real, data_base_custo, status, elegivel_referencia, fonte_dado, criado_por)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'concluida',$13,'importado',$14)`,
-      [genId('obra'), l.codigo, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
-        l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel, req.userId],
-    )
-    inseridas++
+    const [existente] = await q('SELECT id FROM orcamento.obras WHERE codigo = $1', [l.codigo])
+    if (existente) {
+      if (!atualizar) { puladas++; continue }
+      await q(
+        `UPDATE orcamento.obras SET
+           nome=$2, tipo_obra_id=$3, padrao_id=$4, localidade_id=$5, area_construida_m2=$6,
+           custo_real_total=$7, custo_orcado_total=$8, dt_inicio_real=$9, dt_fim_real=$10,
+           data_base_custo=$11, elegivel_referencia=$12, fonte_dado='importado', updated_at=now()
+         WHERE id=$1`,
+        [existente.id, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
+          l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel])
+      atualizadas++
+    } else {
+      await q(
+        `INSERT INTO orcamento.obras
+           (id, codigo, nome, tipo_obra_id, padrao_id, localidade_id, area_construida_m2, custo_real_total, custo_orcado_total,
+            dt_inicio_real, dt_fim_real, data_base_custo, status, elegivel_referencia, fonte_dado, criado_por)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'concluida',$13,'importado',$14)`,
+        [genId('obra'), l.codigo, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
+          l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel, req.userId],
+      )
+      inseridas++
+    }
   }
-  if (inseridas > 0) await registrarLog(req, 'create', 'importacao', null)
-  res.json({ inseridas, total: linhas.length, erros })
+  if (inseridas + atualizadas > 0) await registrarLog(req, atualizadas > 0 ? 'update' : 'create', 'importacao', null)
+  res.json({ inseridas, atualizadas, puladas, total: linhas.length, erros })
 }))
 
 // Detalhamento de obra (EAP, itens, realizados, curva ABC) — RF-B02..B04, RF-D04.
