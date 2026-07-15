@@ -181,6 +181,7 @@ adversarial usa para atacar as regras isoladamente.
 | `diag_projbasico.py` (50L) | Diagnóstico do PDF único (projeto básico): páginas com tabela, totais/BDI/área. | ferramenta de dev do ETL |
 | `verificar_estimativa.mjs` (89L) | Bate os números da **estimativa paramétrica** contra a API viva (conferência ponta a ponta). | chama a API (`/api/analogas`, `/estimativas`) |
 | `sonda_banco.mjs` (79L) | **Sonda somente leitura** (`npm run sonda`): diz se o alvo da `DATABASE_URL` é produção ou dev, migrations aplicadas, contagens — **antes** de qualquer escrita. | usa `pg` direto; ver `PRODUCAO.md` |
+| `smoke_deploy.mjs` (≈130L) | **Smoke-test pós-deploy** (`npm run smoke`): bate nas URLs públicas (health, gate 401, CORS, login real, **SSO** com o app, site). Não usa `.env`; config por variáveis de ambiente; nunca imprime senha/token. | roda contra o deploy; ver `PRODUCAO.md` |
 | `requirements.txt` | Dependências do ETL: `pdfplumber`, `psycopg2-binary`. | `importar_orcamento.py` |
 | `requirements-dev.txt` | Dependências de teste do ETL: `pytest`. | `scripts/tests/` |
 | `tests/test_importar_orcamento.py` (75L) | Testes (pytest) das funções puras do ETL: `url_direta`, partição de anexos. | `npm run test:py` |

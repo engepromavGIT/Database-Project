@@ -15,7 +15,8 @@
     "test": "node tests/estimativa.test.mjs && node tests/bottomup.test.mjs && node tests/importacao.test.mjs && node tests/prazo.test.mjs && node tests/conciliar.test.mjs && node tests/abc.test.mjs && node tests/curvas.test.mjs && node tests/indices.test.mjs && node tests/produtividade.test.mjs && node tests/custoetapa.test.mjs && node tests/auth.test.mjs && node tests/anexos.test.mjs",
     "test:py": "python -m pytest scripts/tests -q",
     "check": "node --check server/index.js && node --check server/obraDetalhe.js && node --check server/curvaABC.js && node --check server/curvaS.js && node --check server/produtividade.js && node --check server/custoEtapa.js && node --check server/estimativa/normalizacao.js && node --check server/estimativa/similaridade.js && node --check server/estimativa/metodos.js && node --check server/importacao/mapear.js && node --check server/importacao/conciliar.js && node --check server/importacao/indices.js && node --check server/db.js && node --check server/auth.js && node --check src/data/api.js",
-    "sonda": "node scripts/sonda_banco.mjs"
+    "sonda": "node scripts/sonda_banco.mjs",
+    "smoke": "node scripts/smoke_deploy.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

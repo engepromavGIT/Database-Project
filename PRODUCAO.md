@@ -137,11 +137,61 @@ Detalhes já resolvidos no arquivo (verificados rodando):
 
 ---
 
+## Variáveis de ambiente (valores exatos)
+
+Os 4 valores que o Render pede (`sync: false`). Defina-os no serviço indicado:
+
+| Variável | Serviço | Valor exato (exemplo) | Cuidado |
+|---|---|---|---|
+| `DATABASE_URL` | `promav-orcamento-api` | `postgresql://<user>:<senha>@<host>-pooler.<região>.aws.neon.tech/neondb?sslmode=require` | **O MESMO banco do app** (schema `orcamento` + lê `public.users`). Use o host **com** `-pooler`. Migre 001→013 antes do 1º deploy. |
+| `JWT_SECRET` | `promav-orcamento-api` | *(copie de Render → `promav-api` → Environment → `JWT_SECRET`)* | **Idêntico ao do app**, senão o SSO quebra. **Nunca** `generateValue: true` aqui. |
+| `CORS_ORIGIN` | `promav-orcamento-api` | `https://promav-orcamento-web.onrender.com` | A URL do site (sem barra no fim). Vazio = libera todas as origens. |
+| `VITE_API_URL` | `promav-orcamento-web` | `https://promav-orcamento-api.onrender.com` | Embutido no bundle **no build** → mudar depois exige **rebuild** do site. |
+
+Fixos/automáticos (não precisa mexer): `NODE_ENV=production` (já no `render.yaml`), `PORT` (o Render
+injeta — **não** defina `API_PORT`). Opcionais: `INTEGRACAO_API_KEY` (liga `/api/integracao/*`),
+`ANEXO_UPLOAD_MAX_MB` (default 25).
+
+> **Ordem que evita retrabalho:** os dois serviços referenciam a URL um do outro. Faça o **deploy da
+> API primeiro** para saber a URL dela → preencha `VITE_API_URL` no site → quando o site tiver URL,
+> volte e preencha `CORS_ORIGIN` na API. (Ou deixe `CORS_ORIGIN` vazio no 1º deploy e trave depois.)
+
+## Smoke-test pós-deploy (`npm run smoke`)
+
+Assim que publicar, rode contra as **URLs públicas** para ter certeza de que subiu certo. O script
+(`scripts/smoke_deploy.mjs`) **não usa o `.env` local** e **nunca imprime senha/token**:
+
+```bash
+API_URL=https://promav-orcamento-api.onrender.com \
+WEB_URL=https://promav-orcamento-web.onrender.com \
+SMOKE_EMAIL=engenharia.promav@gmail.com \
+SMOKE_PASSWORD='<sua senha do app>' \
+APP_API_URL=https://promav-api.onrender.com \
+npm run smoke
+```
+
+O que ele verifica (o que faltar credencial é **pulado**, não falha):
+
+1. `GET /api/health` → `200 {ok:true, now}` — a API subiu e o **banco responde**. (Espera até 90s pelo
+   *cold start* do plano free.)
+2. `GET /api/obras` sem token → **401** — o gate de autenticação está ativo.
+3. **CORS** reflete a origem do site.
+4. **Login real** (`SMOKE_EMAIL`/`SMOKE_PASSWORD`) → `me` → lista de obras: prova auth + banco + hash.
+5. **SSO** (se `APP_API_URL`): faz login **no app** e usa esse token **no módulo** — prova que o
+   `JWT_SECRET` dos dois bate. É o teste que confirma o passo do JWT.
+6. O **site** responde `200` com o HTML da SPA.
+
+Sai com código ≠ 0 se qualquer check falhar (dá para usar em CI). *(Já testei o script contra um
+servidor local: health/gate/CORS passam e uma URL inacessível vira um `✗` limpo, sem derrubar o
+script.)*
+
+---
+
 ## Ordem recomendada
 
 1. **Rotacionar a credencial do Neon** (a mais antiga das dívidas; e você vai mexer nas envs de
    qualquer jeito nos passos seguintes — faça de uma vez).
 2. **Ensaio + migração da produção** (passos 0–2).
-3. **`render.yaml` do módulo + JWT do Render** → publicar.
+3. **`render.yaml` do módulo + JWT do Render** → publicar → **`npm run smoke`** para confirmar.
 4. Só então: carregar mais orçamentos e a série SINAPI — com o módulo no ar, cada obra nova já
    melhora a estimativa para quem usa.
