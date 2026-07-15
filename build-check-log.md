@@ -1254,3 +1254,50 @@ CHECK) e a 012 (`itens_custo.horas`) foram adicionadas nesta sessão. **Produç�
 3. **Aplicar as migrations 001→012 na produção** (em janela controlada, com sonda somente-leitura
    antes de escrever) — hoje só a dev está migrada. Conferir de onde saiu a connection string de
    **produção** que circulou (quase-acidente já registrado).
+
+---
+
+## Atualização 2026-07-13 — verificação do handoff do Cowork (RF-D03/D02/B02/B06 + kit de produção)
+
+Verificadas e commitadas as 4 frentes do `HANDOFF_2026-07-13_d03-d02-b02-b06.md` (desvio de prazo
+RF-D03, custo/m² por etapa RF-D02, EAP editável RF-B02, upload de anexo RF-B06) + o kit de infra
+(sonda, trava `DB_BRANCH_ESPERADA`, `PRODUCAO.md`, `render.yaml`, fix da cadeia de migrations 013).
+O Cowork alinhou o `JWT_SECRET` local com o app (SSO local agora compatível).
+
+| Etapa | Resultado |
+|-------|-----------|
+| npm install | ✅ 213 pacotes, **0 vulnerabilidades** |
+| npm run check | ✅ **15 arquivos** (inclui `server/custoEtapa.js`) |
+| npm test | ✅ **240 passou, 0 falhou** (era 184; +56: custoEtapa 43, nomeAnexo 13) |
+| npm run build | ✅ **30 módulos** |
+| npm run migrate (dev) | ✅ cadeia **001→013 roda limpa DUAS vezes** (fix do defeito #12: a 001 faz `DROP VIEW IF EXISTS` antes de recriar a view que a 013 estendeu) |
+| npm run sonda | ✅ alvo = **dev** (`ep-restless-dawn`), schema 19 objetos/4 obras, `public.users` presente, migrations 011/012/013 aplicadas, trava batendo |
+
+**Spot-checks dos fixes reivindicados (confiar, mas verificar):** #12 `DROP VIEW IF EXISTS` na 001
+✅; #1 `express.json` com `type:` função que pula as rotas binárias ✅; trava `DB_BRANCH_ESPERADA`
+no `migrate.mjs` ✅; #2 travessia **iterativa** (pilha explícita) no `custoEtapa.js` ✅.
+
+**Revisão própria (foco na superfície nova sensível):** li direto a rota de upload
+(`POST /api/obras/:id/anexos`) e os helpers `nomeAnexo`/`mimeSeguro` — `requireAuth` + `express.raw`
+com limite → **413**, 404/400, `nomeAnexo` tira path/`..`/CRLF com corte por **code-point**,
+`mimeSeguro` (regex estrita) + `X-Content-Type-Options: nosniff`, auditoria. **Limpo.** Como o
+código **já passou por revisão adversarial do Cowork** (12 defeitos reais reproduzidos e corrigidos,
+com testes de regressão) e os spot-checks batem, **não rodei um workflow redundante** (já verificado
+adversarialmente).
+
+**Extra:** incluí no commit o `ARQUITETURA.md` (mapa de arquivos do repo) — estava fora da lista de
+`git add` do handoff, mas é doc valiosa e está atualizada (referencia custoEtapa, sonda, trava, 013).
+
+**Não executei nada contra produção** (decisão do usuário, com janela/rollback — `PRODUCAO.md`).
+Follow-ups de código que seguem: RF-F04 (bottom-up sem `nivel_confianca_pct`), RF-F05 (faixa O–P de
+prazo), RF-C01/C02 (validação na prévia + PDF na web). Bloqueios de dados/infra inalterados
+(série SINAPI real, PDFs variados, produção não migrada, rotação da credencial Neon).
+
+### Para o Cowork
+> Handoff de 13/07 verificado e commitado. Pipeline offline reproduziu exatamente o esperado
+> (**check 15 · test 240 · build 30**) e a cadeia **001→013 migra limpa duas vezes** na dev — o fix
+> do `DROP VIEW` (defeito #12) resolve mesmo. A trava `DB_BRANCH_ESPERADA` e a `npm run sonda` são
+> ótimas — a sonda confirmou o alvo dev antes de qualquer escrita. Fiz uma passada própria na rota
+> de upload (a superfície nova de risco): está blindada (413, path/`..`/CRLF, mime estrito, nosniff).
+> Como vocês já rodaram a adversarial (12 defeitos, com repro + testes), não dupliquei o workflow.
+> **Commitei também o `ARQUITETURA.md`** (o `git add` do handoff não o incluía). **Produção intocada.**
