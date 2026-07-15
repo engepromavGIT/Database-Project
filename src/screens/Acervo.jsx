@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, num, monthToDate } from '../data/format.js'
+import { brl, num, desvioPct, monthToDate } from '../data/format.js'
 import { baixarCSV } from '../data/exportar.js'
 import { ObraDetalhe } from './ObraDetalhe.jsx'
 
@@ -298,14 +298,18 @@ export function Acervo({ user }) {
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
-                <th>Obra</th><th>Custo/m²</th><th>Prazo real (dias)</th>
+                <th>Obra</th><th>Custo/m²</th><th>Desvio de custo</th>
+                <th>Prazo real</th><th>Prazo plan.</th><th>Desvio de prazo</th>
               </tr></thead>
               <tbody>
                 {ind.map((o) => (
                   <tr key={o.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td>{o.codigo} — {o.nome}</td>
                     <td>{o.custoM2Real ? brl(o.custoM2Real) : '—'}</td>
-                    <td>{o.prazoRealDias ?? '—'}</td>
+                    <td>{desvioPct(o.fatorDesvioCusto)}</td>
+                    <td>{o.prazoRealDias != null ? `${o.prazoRealDias} d` : '—'}</td>
+                    <td>{o.prazoPlanDias != null ? `${o.prazoPlanDias} d` : '—'}</td>
+                    <td>{desvioPct(o.fatorDesvioPrazo)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,0 +1,76 @@
+# Render Blueprint — módulo Base de Projetos (orçamento) do Promav.
+# Sobe o backend (Express) + o frontend (estático). O banco continua no Neon.
+# Espelha o render.yaml do app Promav, com três diferenças que IMPORTAM (leia os avisos).
+#
+# Como usar: Render → "New +" → "Blueprint" → conecte este repositório.
+# O Render vai pedir os valores marcados como "sync: false".
+#
+# ⚠️  MIGRATIONS NÃO RODAM AQUI. O buildCommand é só `npm install` de propósito: aplicar
+#     migrations no deploy escreveria no banco sem sonda e sem janela. Migre à mão seguindo
+#     o PRODUCAO.md (`npm run sonda` → `npm run migrate`, com a trava DB_BRANCH_ESPERADA).
+
+services:
+  # ---------- Backend: API Express do módulo ----------
+  - type: web
+    name: promav-orcamento-api
+    runtime: node
+    plan: free
+    region: oregon            # mesma região do Neon (us-west-2) — evita latência por request
+    buildCommand: npm install
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+        # Em produção o servidor ABORTA no boot se JWT_SECRET não estiver definido
+        # (guard fatal em server/index.js) — é proposital: sem ele, o auth.js cairia
+        # num segredo padrão público e qualquer um forjaria token.
+
+      - key: DATABASE_URL
+        sync: false
+        # ⚠️  É O MESMO BANCO DO APP PROMAV (não crie um banco separado).
+        #     O módulo vive no schema isolado `orcamento` e LÊ `public.users` (só leitura)
+        #     para reaproveitar o login. Use a connection string com -pooler.
+        #     Rode as migrations 001→013 nesse banco ANTES do primeiro deploy (PRODUCAO.md).
+
+      - key: JWT_SECRET
+        sync: false
+        # ⚠️  COLE AQUI O MESMO VALOR DO JWT_SECRET DO SERVIÇO `promav-api` (app).
+        #     Pegue em: Render → promav-api → Environment → JWT_SECRET.
+        #     NÃO use `generateValue: true` (como faz o app): geraria um segredo DIFERENTE,
+        #     e o token emitido pelo app não valeria no módulo — o SSO quebraria.
+        #     Os dois assinam `{ sub: user.id }`; só o segredo precisa bater.
+
+      # PORT: o Render injeta. O código usa API_PORT || PORT || 3001, então NÃO defina
+      # API_PORT aqui — senão ele ignoraria a porta que o Render espera e o deploy falharia.
+
+      - key: CORS_ORIGIN
+        sync: false
+        # Cole a URL pública do site: https://promav-orcamento-web.onrender.com
+        # Se ficar vazio, o backend libera todas as origens. Não é catastrófico (a auth é por
+        # token, não por cookie), mas trave assim que souber a URL.
+
+      # Opcionais — descomente se for usar:
+      # - key: INTEGRACAO_API_KEY
+      #   sync: false          # RF-H03: libera /api/integracao/* p/ o módulo comercial (x-api-key).
+      #                        # Vazio = endpoints de integração DESATIVADOS.
+      # - key: ANEXO_UPLOAD_MAX_MB
+      #   value: "25"          # teto do upload de anexo pelo app (acima disso o BYTEA derruba o pooler)
+
+  # ---------- Frontend: build estático do Vite ----------
+  - type: web
+    name: promav-orcamento-web
+    runtime: static
+    # --include=dev garante que o Vite (devDependency) seja instalado no build.
+    buildCommand: npm install --include=dev && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+        # Cole a URL do backend: https://promav-orcamento-api.onrender.com
+        # O Vite EMBUTE este valor no bundle em tempo de BUILD — mudar depois exige rebuild.
+    routes:
+      # SPA: qualquer rota cai no index.html.
+      - type: rewrite
+        source: /*
+        destination: /index.html

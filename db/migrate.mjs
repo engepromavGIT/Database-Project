@@ -14,8 +14,26 @@ async function run() {
     console.error('DATABASE_URL não definida — preencha o .env antes de migrar.')
     process.exit(1)
   }
+  // ---- Trava de alvo -------------------------------------------------------
+  // Já circulou aqui uma connection string de PRODUÇÃO como se fosse de dev; um `npm run
+  // migrate` teria criado o schema inteiro no banco do app. Com DB_BRANCH_ESPERADA definida
+  // no .env, o migrate RECUSA qualquer host que não seja o esperado — o erro deixa de ser
+  // "improvável" e passa a ser impossível sem uma edição consciente do .env.
+  const host = (process.env.DATABASE_URL.match(/@([^/:?]+)/) || [])[1] || '(desconhecido)'
+  const esperada = process.env.DB_BRANCH_ESPERADA
+  if (esperada && !host.includes(esperada)) {
+    console.error('\n❌ MIGRATE RECUSADO — o alvo não é a branch esperada.')
+    console.error(`   DATABASE_URL aponta para : ${host}`)
+    console.error(`   DB_BRANCH_ESPERADA       : ${esperada}`)
+    console.error('   Se o alvo é mesmo intencional (ex.: migrar a produção), rode antes')
+    console.error('   `npm run sonda` e ajuste DB_BRANCH_ESPERADA no .env conscientemente.\n')
+    process.exit(1)
+  }
+  console.log(`Alvo: ${host}`)
+  if (!esperada) console.log('⚠️  DB_BRANCH_ESPERADA não definida — trava DESLIGADA. Rode `npm run sonda` antes.')
+
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-  console.log(`Aplicando ${files.length} migration(s) em ${dir}\n`)
+  console.log(`\nAplicando ${files.length} migration(s) em ${dir}\n`)
   for (const f of files) {
     process.stdout.write(`  ${f} ... `)
     try {

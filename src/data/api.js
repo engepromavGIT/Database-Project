@@ -147,6 +147,8 @@ export const api = {
   curvaAbc: (obraId) => req('GET', `/obras/${obraId}/curva-abc`),
   // produtividade / indicadores por serviço (RF-D05): R$/m², qtd/m², h/m²
   produtividade: (obraId) => req('GET', `/obras/${obraId}/produtividade`),
+  // custo por etapa da EAP (RF-D02): R$ e R$/m² com roll-up nas macro-etapas
+  custoEtapas: (obraId) => req('GET', `/obras/${obraId}/custo-etapas`),
 
   // ----- cronograma físico-financeiro / curva S (RF-B05) -----
   curvaS: (obraId) => req('GET', `/obras/${obraId}/curva-s`),
@@ -162,6 +164,19 @@ export const api = {
   obraAnexos: (obraId) => req('GET', `/obras/${obraId}/anexos`),
   // URL de download direto (<a href>); o requireAuth do servidor aceita ?token=.
   anexoUrl: (anexoId) => `${BASE}/anexos/${anexoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`,
+  // Upload pelo app (RF-B06): bytes crus + nome em ?filename= (mesmo padrão do importarAnalisar).
+  // Acima do teto do servidor (25 MB) volta 413 com mensagem clara.
+  uploadAnexo: async (obraId, file) => {
+    const buf = await file.arrayBuffer()
+    const headers = { 'Content-Type': file.type || 'application/octet-stream' }
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const url = `${BASE}/obras/${obraId}/anexos?filename=${encodeURIComponent(file.name)}`
+    const res = await fetch(url, { method: 'POST', headers, body: buf })
+    if (res.status === 401) { setToken(null); onUnauthorized() }
+    if (!res.ok) { let m = `${res.status}`; try { m = (await res.json()).error || m } catch { /* */ } throw new Error(m) }
+    return res.json()
+  },
+  delAnexo: (id) => req('DELETE', `/anexos/${id}`),
 
   // ----- comparação (RF-E03) -----
   comparar: (obraIds) => req('POST', '/comparar', { obraIds }),

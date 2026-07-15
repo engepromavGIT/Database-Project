@@ -241,7 +241,15 @@ CREATE INDEX IF NOT EXISTS estref_obra_idx        ON orcamento.estimativa_refere
 -- View de indicadores por obra (apoia RF-D02 / RF-D03)
 -- custo/m², fator de desvio de custo e prazos em dias.
 -- ------------------------------------------------------------
-CREATE OR REPLACE VIEW orcamento.vw_obra_indicadores AS
+-- As migrations são re-executadas por inteiro a cada `npm run migrate` (não há tabela de
+-- controle), então esta precisa conviver com uma view JÁ EVOLUÍDA por migrations posteriores.
+-- A 013 acrescentou a coluna fator_desvio_prazo; um CREATE OR REPLACE aqui tentaria REMOVÊ-LA
+-- e o Postgres recusa ("cannot drop columns from view"), quebrando a cadeia logo na 001.
+-- Dropar antes resolve: a view não guarda dado e nada depende dela (sem CASCADE de propósito —
+-- se um dia algo depender, queremos o erro alto, não uma remoção silenciosa).
+DROP VIEW IF EXISTS orcamento.vw_obra_indicadores;
+
+CREATE VIEW orcamento.vw_obra_indicadores AS
 SELECT
   o.id,
   o.codigo,

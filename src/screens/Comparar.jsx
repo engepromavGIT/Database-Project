@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, num } from '../data/format.js'
+import { brl, num, desvioPct } from '../data/format.js'
 import { baixarCSV } from '../data/exportar.js'
 
-const desvioPct = (fator) => (fator == null ? '—' : `${fator > 1 ? '+' : ''}${num((fator - 1) * 100, 1)}%`)
 
 export function Comparar() {
   const [obras, setObras] = useState([])
@@ -38,6 +37,7 @@ export function Comparar() {
     ['Desvio de custo', (o) => desvioPct(o.fatorDesvioCusto)],
     ['Prazo real (dias)', (o) => (o.prazoRealDias ?? '—')],
     ['Prazo planejado (dias)', (o) => (o.prazoPlanDias ?? '—')],
+    ['Desvio de prazo', (o) => desvioPct(o.fatorDesvioPrazo)],
   ]
 
   return (

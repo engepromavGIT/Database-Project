@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, num } from '../data/format.js'
+import { brl, num, desvioPct } from '../data/format.js'
 
-const desvioPct = (f) => (f == null ? '—' : `${f > 1 ? '+' : ''}${num((f - 1) * 100, 1)}%`)
 
 const FILTRO_VAZIO = {
   tipoObraId: '', padraoId: '', localidadeId: '', clienteId: '',
@@ -96,6 +95,7 @@ export function Dashboard() {
             <Card rotulo="Custo/m² médio" valor={brl(d.geral.custoM2Medio)} />
             <Card rotulo="Desvio de custo médio" valor={desvioPct(d.geral.desvioCustoMedio)} sub="realizado ÷ orçado" />
             <Card rotulo="Prazo médio" valor={d.geral.prazoMedioDias != null ? `${num(d.geral.prazoMedioDias)} dias` : '—'} />
+            <Card rotulo="Desvio de prazo médio" valor={desvioPct(d.geral.desvioPrazoMedio)} sub="realizado ÷ planejado" />
             <Card rotulo="Estimativas" valor={d.estimativas.total} sub={`${d.estimativas.calibradas} calibradas`} />
             <Card rotulo="Erro médio (calibração)" valor={d.estimativas.erroMedioAbs != null ? `${d.estimativas.erroMedioAbs}%` : '—'} />
           </div>

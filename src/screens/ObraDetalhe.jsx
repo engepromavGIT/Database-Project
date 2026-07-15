@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { api } from '../data/api.js'
 import { brl, num, pct } from '../data/format.js'
 
@@ -20,7 +20,32 @@ const cmpEap = (a, b) => {
   }
   return 0
 }
-const profEap = (cod) => (cod || '').split('.').length - 1
+// A tabela de etapas indentava pela profundidade do CÓDIGO EAP textual, mas a hierarquia real
+// (e o roll-up de custo) é a FK etapa_pai_id. Com a EAP editável (RF-B02) as duas visões
+// divergiam: mover uma etapa não mexia na tabela onde o usuário acabou de editar, e o campo
+// "ordem" não tinha efeito nenhum. Agora a tabela achata a árvore REAL, em pré-ordem.
+const achatarEap = (lista) => {
+  const porId = new Map(lista.map((e) => [e.id, e]))
+  const filhos = new Map()
+  const raizes = []
+  for (const e of lista) {
+    const pai = e.etapaPaiId != null && e.etapaPaiId !== e.id && porId.has(e.etapaPaiId) ? e.etapaPaiId : null
+    if (pai == null) raizes.push(e)
+    else filhos.set(pai, [...(filhos.get(pai) || []), e])
+  }
+  const cmpIrmas = (a, b) => ((Number(a.ordem) || 0) - (Number(b.ordem) || 0)) || cmpEap(a, b)
+  const vistos = new Set()
+  const out = []
+  const visitar = (e, nivel) => {
+    if (vistos.has(e.id)) return // defensivo: ciclo não pendura a tela
+    vistos.add(e.id)
+    out.push({ ...e, nivel })
+    for (const f of [...(filhos.get(e.id) || [])].sort(cmpIrmas)) visitar(f, nivel + 1)
+  }
+  for (const r of [...raizes].sort(cmpIrmas)) visitar(r, 0)
+  for (const e of lista) if (!vistos.has(e.id)) visitar(e, 0)
+  return out
+}
 const corta = (s, n) => { const t = s || ''; return t.length > n ? `${t.slice(0, n)}…` : t }
 const fmtBytes = (b) => {
   const n = Number(b)
@@ -29,6 +54,9 @@ const fmtBytes = (b) => {
 }
 
 const ITEM_VAZIO = { servicoRefId: '', descricao: '', unidade: '', quantidade: '', custoUnitario: '', categoriaId: '', horas: '' }
+const ETAPA_VAZIA = { descricao: '', codigoEap: '', etapaPaiId: '', ordem: '' }
+// Espelha ANEXO_UPLOAD_MAX_MB do servidor: acima disso o BYTEA derruba o pooler do Neon.
+const ANEXO_MAX_BYTES = 25 * 1024 * 1024
 
 // RF-D01 — Atualização monetária: leva os custos da obra a uma data-base alvo via índice.
 function AtualizacaoMonetaria({ obra }) {
@@ -326,16 +354,63 @@ function Produtividade({ prod }) {
   )
 }
 
+// Custo por etapa da EAP (RF-D02): R$ e R$/m², com roll-up — a macro soma as descendentes
+// (os itens ficam nas folhas, então sem o roll-up as macro-etapas apareceriam zeradas).
+// O custo/m² por CATEGORIA já é mostrado na seção Produtividade (mesma origem de dados).
+function CustoEtapas({ dados }) {
+  if (!dados || !dados.etapas || dados.etapas.length === 0) return null
+  return (
+    <section style={{ border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+      <strong style={{ fontSize: 13 }}>Custo por etapa (R$/m²)</strong>
+      {dados.semArea && (
+        <span style={{ fontSize: 12, color: 'var(--fg-3)', marginLeft: 8 }}>
+          sem área cadastrada na obra → R$/m² indisponível
+        </span>
+      )}
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 6 }}>
+        <thead><tr style={{ textAlign: 'left', color: 'var(--fg-3)' }}>
+          <th>Etapa</th><th>Custo</th><th>R$/m²</th><th>% do total</th>
+        </tr></thead>
+        <tbody>
+          {dados.etapas.map((e) => (
+            <tr key={e.id} style={{ borderTop: '1px solid var(--border)' }}>
+              <td style={{ paddingLeft: 4 + e.nivel * 16, fontWeight: e.nivel === 0 ? 600 : 400 }}>
+                {e.codigoEap && <span style={{ color: 'var(--fg-3)', marginRight: 6 }}>{e.codigoEap}</span>}
+                {corta(e.descricao || '—', 40)}
+              </td>
+              <td>{brl(e.custo)}</td>
+              <td>{e.custoM2 == null ? '—' : brl(e.custoM2)}</td>
+              <td>{e.pctCusto == null ? '—' : `${num(e.pctCusto, 1)}%`}</td>
+            </tr>
+          ))}
+          <tr style={{ borderTop: '2px solid var(--border)', fontWeight: 600 }}>
+            <td>Total</td>
+            <td>{brl(dados.total.custo)}</td>
+            <td>{dados.total.custoM2 == null ? '—' : brl(dados.total.custoM2)}</td>
+            <td>{dados.total.custo > 0 ? '100,0%' : '—'}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  )
+}
+
 export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [etapas, setEtapas] = useState([])
   const [servicos, setServicos] = useState([])
   const [abc, setAbc] = useState([])
   const [prod, setProd] = useState(null)
   const [anexos, setAnexos] = useState([])
+  const [custoEt, setCustoEt] = useState(null)
+  const [arquivo, setArquivo] = useState(null)
+  const [subindo, setSubindo] = useState(false)
+  const fileRef = useRef(null)
+  const [erroAnexo, setErroAnexo] = useState(null)
+  const seq = useRef(0)
   const [sel, setSel] = useState(null)
   const [itens, setItens] = useState([])
   const [realizados, setRealizados] = useState([])
-  const [novaEtapa, setNovaEtapa] = useState({ descricao: '', codigoEap: '' })
+  const [novaEtapa, setNovaEtapa] = useState(ETAPA_VAZIA)
   const [novoItem, setNovoItem] = useState(ITEM_VAZIO)
   const [novoReal, setNovoReal] = useState({ competencia: '', valor: '' })
   const [editEtapaId, setEditEtapaId] = useState(null)
@@ -343,10 +418,16 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
   const [editRealId, setEditRealId] = useState(null)
   const [erro, setErro] = useState(null)
 
+  const carregarAnexos = () => api.obraAnexos(obra.id).then(setAnexos).catch(() => setAnexos([]))
+
   const recarregar = async () => {
-    // Produtividade é acessória (indicadores): sua falha (ex.: migration 012 pendente → 500)
-    // não pode derrubar EAP + Curva ABC nem quebrar o refresh pós-CRUD. Isolada como os anexos.
-    api.produtividade(obra.id).then(setProd).catch(() => setProd(null))
+    // Produtividade e custo por etapa são acessórios (indicadores): a falha de um deles
+    // (ex.: migration pendente → 500) não pode derrubar EAP + Curva ABC nem quebrar o refresh
+    // pós-CRUD. Cada um isolado no seu próprio catch, como os anexos.
+    const s = ++seq.current
+    const seOAtual = (fn) => (v) => { if (s === seq.current) fn(v) }
+    api.produtividade(obra.id).then(seOAtual(setProd)).catch(seOAtual(() => setProd(null)))
+    api.custoEtapas(obra.id).then(seOAtual(setCustoEt)).catch(seOAtual(() => setCustoEt(null)))
     try {
       const [e, a] = await Promise.all([api.obraEtapas(obra.id), api.curvaAbc(obra.id)])
       setEtapas(e); setAbc(a)
@@ -360,7 +441,7 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
   }
   useEffect(() => {
     api.servicos().then(setServicos).catch(() => {})
-    api.obraAnexos(obra.id).then(setAnexos).catch(() => setAnexos([]))
+    carregarAnexos()
     recarregar()
   }, [obra.id])
   // Ao trocar de etapa, cancela qualquer edição de item/realizado da etapa anterior.
@@ -371,16 +452,80 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
 
   const acao = async (fn) => { setErro(null); try { await fn() } catch (e) { setErro(e.message) } }
 
-  // ----- Etapas (adicionar/editar) -----
-  const cancelarEtapa = () => { setEditEtapaId(null); setNovaEtapa({ descricao: '', codigoEap: '' }) }
-  const editarEtapa = (e) => { setEditEtapaId(e.id); setNovaEtapa({ descricao: e.descricao || '', codigoEap: e.codigoEap || '' }) }
+  // ----- Etapas (adicionar/editar) — RF-B02: hierarquia (pai) e ordem editáveis -----
+  const cancelarEtapa = () => { setEditEtapaId(null); setNovaEtapa(ETAPA_VAZIA) }
+  const editarEtapa = (e) => {
+    setEditEtapaId(e.id)
+    setNovaEtapa({
+      descricao: e.descricao || '', codigoEap: e.codigoEap || '',
+      etapaPaiId: e.etapaPaiId || '', ordem: e.ordem == null ? '' : String(e.ordem),
+    })
+  }
+  // Descendentes de uma etapa (o Set evita loop se os dados vierem com ciclo).
+  const descendentes = (id) => {
+    const out = new Set()
+    const desce = (pid) => {
+      for (const e of etapas) if (e.etapaPaiId === pid && !out.has(e.id)) { out.add(e.id); desce(e.id) }
+    }
+    if (id) desce(id)
+    return out
+  }
+  // Pais possíveis: nunca a própria etapa nem uma descendente dela (o servidor também recusa
+  // — criaCiclo —, mas não faz sentido oferecer uma opção que vai dar erro).
+  const paisPossiveis = () => {
+    if (!editEtapaId) return [...etapas]
+    const bloq = descendentes(editEtapaId)
+    return etapas.filter((e) => e.id !== editEtapaId && !bloq.has(e.id))
+  }
+  // Excluir uma etapa apaga em CASCATA as subetapas, itens e realizados. Sem confirmar, e sem
+  // limpar `sel`/`editEtapaId` quando a etapa selecionada era uma DESCENDENTE da excluída, o
+  // painel de itens seguia renderizado apontando para uma etapa que não existe mais.
+  const excluirEtapa = (e) => acao(async () => {
+    const desc = descendentes(e.id)
+    const aviso = desc.size
+      ? `Excluir "${e.descricao}" apaga também ${desc.size} subetapa(s) e todos os itens e realizados delas. Continuar?`
+      : `Excluir a etapa "${e.descricao}" (e seus itens/realizados)?`
+    if (!window.confirm(aviso)) return
+    await api.delEtapa(e.id)
+    if (sel === e.id || desc.has(sel)) setSel(null)
+    if (editEtapaId === e.id || desc.has(editEtapaId)) cancelarEtapa()
+    await recarregar()
+  })
   const salvarEtapa = () => acao(async () => {
     if (!novaEtapa.descricao.trim()) return
-    const dados = { descricao: novaEtapa.descricao.trim(), codigoEap: novaEtapa.codigoEap.trim() || null }
+    const dados = {
+      descricao: novaEtapa.descricao.trim(),
+      codigoEap: novaEtapa.codigoEap.trim() || null,
+      etapaPaiId: novaEtapa.etapaPaiId || null, // '' → null = vira macro-etapa (raiz)
+    }
+    // Ordem em branco na EDIÇÃO → omite a chave (o servidor preserva a ordem atual).
+    if (novaEtapa.ordem !== '') dados.ordem = Number(novaEtapa.ordem)
+    else if (!editEtapaId) dados.ordem = 0
     if (editEtapaId) await api.updEtapa(editEtapaId, dados)
     else await api.addEtapa(obra.id, dados)
     cancelarEtapa(); await recarregar()
   })
+  // O erro do upload fica JUNTO do widget: o <div> de erro geral está no topo da tela, muito
+  // acima do seletor de arquivo — o usuário clicava "Enviar" e não via nada acontecer.
+  const escolherArquivo = (ev) => {
+    const f = ev.target.files?.[0] || null
+    if (f && f.size > ANEXO_MAX_BYTES) {
+      setErroAnexo(`Arquivo grande demais (${fmtBytes(f.size)}). O limite pelo app é 25 MB — use o ETL para arquivos maiores.`)
+      setArquivo(null); ev.target.value = ''
+      return
+    }
+    setErroAnexo(null); setArquivo(f)
+  }
+  const enviarAnexo = async () => {
+    if (!arquivo) return
+    setErroAnexo(null); setSubindo(true)
+    try {
+      await api.uploadAnexo(obra.id, arquivo)
+      setArquivo(null)
+      if (fileRef.current) fileRef.current.value = ''
+      await carregarAnexos()
+    } catch (e) { setErroAnexo(e.message) } finally { setSubindo(false) }
+  }
 
   // ----- Itens (adicionar/editar) -----
   const cancelarItem = () => { setEditItemId(null); setNovoItem(ITEM_VAZIO) }
@@ -438,10 +583,10 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
               <th>Etapa</th><th>Orçado</th><th>Realizado</th><th>Desvio</th><th></th>
             </tr></thead>
             <tbody>
-              {[...etapas].sort(cmpEap).map((e) => (
+              {achatarEap(etapas).map((e) => (
                 <tr key={e.id} style={{ borderTop: '1px solid var(--border)', background: sel === e.id || editEtapaId === e.id ? 'var(--bg-subtle)' : 'transparent' }}>
-                  <td style={{ paddingLeft: 4 + profEap(e.codigoEap) * 16 }}>
-                    <button className="btn btn-ghost btn-sm" style={{ fontWeight: profEap(e.codigoEap) === 0 ? 600 : 400 }} onClick={() => setSel(e.id)}>
+                  <td style={{ paddingLeft: 4 + e.nivel * 16 }}>
+                    <button className="btn btn-ghost btn-sm" style={{ fontWeight: e.nivel === 0 ? 600 : 400 }} onClick={() => setSel(e.id)}>
                       <span style={{ color: 'var(--fg-3)', marginRight: 6 }}>{e.codigoEap}</span>{e.descricao}
                     </button>
                   </td>
@@ -449,7 +594,7 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
                   <td>{desvioPct(e.custoOrcado, e.custoReal)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn btn-ghost btn-sm" title="Editar" onClick={() => editarEtapa(e)}>✎</button>
-                    <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => acao(async () => { await api.delEtapa(e.id); if (sel === e.id) setSel(null); if (editEtapaId === e.id) cancelarEtapa(); await recarregar() })}>×</button>
+                    <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => excluirEtapa(e)}>×</button>
                   </td>
                 </tr>
               ))}
@@ -460,6 +605,17 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
           <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
             <input className="control" placeholder={editEtapaId ? 'Descrição da etapa' : 'Nova etapa'} value={novaEtapa.descricao} onChange={(e) => setNovaEtapa((f) => ({ ...f, descricao: e.target.value }))} />
             <input className="control" placeholder="cód. EAP" style={{ width: 90 }} value={novaEtapa.codigoEap} onChange={(e) => setNovaEtapa((f) => ({ ...f, codigoEap: e.target.value }))} />
+          </div>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+            <select className="control" title="Etapa pai (hierarquia da EAP)" style={{ flex: 1 }}
+              value={novaEtapa.etapaPaiId} onChange={(e) => setNovaEtapa((f) => ({ ...f, etapaPaiId: e.target.value }))}>
+              <option value="">— sem pai (macro-etapa)</option>
+              {[...paisPossiveis()].sort(cmpEap).map((e) => (
+                <option key={e.id} value={e.id}>{e.codigoEap ? `${e.codigoEap} · ` : ''}{corta(e.descricao || '', 34)}</option>
+              ))}
+            </select>
+            <input className="control" type="number" placeholder="ordem" title="Ordem entre as etapas irmãs" style={{ width: 80 }}
+              value={novaEtapa.ordem} onChange={(e) => setNovaEtapa((f) => ({ ...f, ordem: e.target.value }))} />
             <button className="btn btn-secondary btn-sm" onClick={salvarEtapa} disabled={!novaEtapa.descricao.trim()}>{editEtapaId ? 'Salvar' : '+'}</button>
             {editEtapaId && <button className="btn btn-ghost btn-sm" title="Cancelar" onClick={cancelarEtapa}>✕</button>}
           </div>
@@ -496,15 +652,28 @@ export function ObraDetalhe({ obra, onClose, onChanged }) {
                 <tr key={a.id} style={{ borderTop: '1px solid var(--border)' }}>
                   <td title={a.filename || ''}>{corta(a.filename || '—', 42)}</td>
                   <td>{fmtBytes(a.sizeBytes)}</td><td>{a.createdAt || '—'}</td>
-                  <td><a className="btn btn-ghost btn-sm" href={api.anexoUrl(a.id)}>Baixar</a></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <a className="btn btn-ghost btn-sm" href={api.anexoUrl(a.id)}>Baixar</a>
+                    <button className="btn btn-ghost btn-sm" title="Excluir" onClick={() => acao(async () => { await api.delAnexo(a.id); await carregarAnexos() })}>×</button>
+                  </td>
                 </tr>
               ))}
               {anexos.length === 0 && <tr><td colSpan="4" className="empty">Sem anexos.</td></tr>}
             </tbody>
           </table>
+          {/* Upload pelo app (RF-B06). Acima de 25 MB o servidor devolve 413 — arquivos
+              maiores devem entrar pelo ETL (conexão direta do Neon; o pooler cai com BYTEA grande). */}
+          <div style={{ display: 'flex', gap: 4, marginTop: 6, alignItems: 'center' }}>
+            <input ref={fileRef} type="file" style={{ flex: 1, fontSize: 12 }} onChange={escolherArquivo} />
+            <button className="btn btn-secondary btn-sm" disabled={!arquivo || subindo} onClick={enviarAnexo}>
+              {subindo ? 'Enviando…' : 'Enviar'}
+            </button>
+          </div>
+          {erroAnexo && <div className="login-error" style={{ fontSize: 12, marginTop: 4 }}>{erroAnexo}</div>}
         </div>
       </div>
 
+      <CustoEtapas dados={custoEt} />
       <Produtividade prod={prod} />
 
       {/* Itens + realizados da etapa selecionada */}

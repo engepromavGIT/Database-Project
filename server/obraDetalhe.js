@@ -1,11 +1,13 @@
 // Detalhamento de obra: EAP (etapas), itens de custo orçado, custos realizados
 // e curva ABC. Registra rotas no app. Tudo em orcamento.*; usa tabelas da
 // migration 001. Autenticação por rota (requireAuth).
+import express from 'express'
 import { q } from './db.js'
 import { requireAuth, registrarLog } from './auth.js'
 import { curvaABC } from './curvaABC.js'
 import { curvaS } from './curvaS.js'
 import { produtividade } from './produtividade.js'
+import { custoPorEtapa, criaCiclo } from './custoEtapa.js'
 
 const genId = (p) => `${p}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
@@ -49,9 +51,47 @@ const ERRO_VAZIO = 'Informe ao menos um valor (avanço ou desembolso).'
 // (o Node lança ERR_INVALID_CHAR em codepoint > 0xFF), então dá o nome real acentuado
 // em filename*=UTF-8'' (RFC 5987/6266) e um fallback ASCII em filename=. Puro/testável.
 export function contentDispositionAnexo(filename) {
-  const nome = (filename || 'anexo').replace(/["\r\n]/g, '')
+  // Surrogate SOLTO (par UTF-16 partido, ex.: emoji cortado por um slice) faz o
+  // encodeURIComponent lançar URIError — e o contrato aqui é nunca lançar.
+  const nome = String(filename || 'anexo').replace(/["\r\n]/g, '').replace(/[\uD800-\uDFFF]/g, '') || 'anexo'
   const asciiNome = nome.replace(/[^\x20-\x7E]/g, '_')
   return `attachment; filename="${asciiNome}"; filename*=UTF-8''${encodeURIComponent(nome)}`
+}
+
+// Teto do upload de anexo PELO APP (RF-B06). Acima disso o INSERT de BYTEA derruba a conexão
+// do POOLER do Neon — o mesmo problema que o ETL contorna com conexão direta. Arquivo maior
+// deve entrar pelo ETL (scripts/importar_orcamento.py), não pela API.
+export const ANEXO_UPLOAD_MAX_MB = Number(process.env.ANEXO_UPLOAD_MAX_MB || 25) || 25
+
+// Nome do arquivo enviado (?filename=). Remove caminho, caracteres de controle e aspas, e
+// limita o tamanho. Não-string (ex.: param repetido vira array) → null → o chamador responde
+// 400 em vez de estourar. Puro/testável.
+export function nomeAnexo(v) {
+  if (typeof v !== 'string') return null
+  const base = v.split(/[/\\]/).pop() || ''
+  const limpo = base.replace(/[\u0000-\u001F\u007F]/g, '').replace(/["\r\n]/g, '').trim()
+  if (!limpo || limpo === '.' || limpo === '..') return null
+  // Corta por CODE POINT: slice(0,200) em unidades UTF-16 partiria um emoji ao meio e
+  // deixaria um surrogate solto (nome mutilado no banco + URIError no Content-Disposition).
+  return [...limpo].slice(0, 200).join('')
+}
+
+// Aceita só um media-type bem-formado; qualquer outra coisa vira octet-stream. O mime é
+// escolhido pelo CLIENTE e refletido no download — não pode virar header arbitrário.
+const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/
+export function mimeSeguro(v) {
+  const m = String(v ?? '').split(';')[0].trim().toLowerCase()
+  return MIME_RE.test(m) ? m : 'application/octet-stream'
+}
+
+// Campo de texto vindo do corpo JSON. Não-string (número, array, objeto) → '' → o chamador
+// responde 400 limpo em vez de estourar no .trim() (500 cru). Mesmo helper do index.js.
+const asStr = (v) => (typeof v === 'string' ? v.trim() : '')
+
+// A etapa pertence mesmo a esta obra? Evita pendurar/mover uma etapa na EAP de outra obra.
+async function etapaDaObra(etapaId, obraId) {
+  const [e] = await q('SELECT 1 FROM orcamento.etapas WHERE id = $1 AND obra_id = $2', [etapaId, obraId])
+  return !!e
 }
 
 // Recalcula subtotais das etapas e os totais da obra a partir de itens/realizados.
@@ -84,8 +124,13 @@ export function registrarObraDetalhe(app) {
   }))
 
   app.post('/api/obras/:id/etapas', requireAuth, wrap(async (req, res) => {
-    const { descricao, codigoEap = null, etapaPaiId = null, ordem = 0 } = req.body || {}
+    const { etapaPaiId = null, ordem = 0 } = req.body || {}
+    const descricao = asStr(req.body?.descricao)
+    const codigoEap = typeof req.body?.codigoEap === 'string' ? req.body.codigoEap.trim() || null : null
     if (!descricao) return res.status(400).json({ error: 'Informe a descrição da etapa.' })
+    if (etapaPaiId && !(await etapaDaObra(etapaPaiId, req.params.id))) {
+      return res.status(400).json({ error: 'Etapa pai inválida (precisa ser uma etapa da mesma obra).' })
+    }
     const id = genId('etp')
     await q(
       `INSERT INTO orcamento.etapas (id, obra_id, etapa_pai_id, codigo_eap, descricao, ordem)
@@ -106,14 +151,52 @@ export function registrarObraDetalhe(app) {
     res.json({ ok: true })
   }))
 
-  // Edita descrição/código EAP da etapa (correção do dia-a-dia → requireAuth). Os custos
-  // da etapa são derivados dos itens/realizados, então a edição aqui não os altera.
+  // Edita a etapa: descrição, código EAP e — RF-B02 — a HIERARQUIA (etapa pai) e a ORDEM.
+  // Só mexe em etapa_pai_id/ordem se as chaves vierem no corpo (ausente = preserva): mesma
+  // lição do 'origem' dos realizados e da 'observacao' das medições, que um PUT zerava.
+  // Guardas: o pai precisa ser da MESMA obra e não pode criar ciclo (criaCiclo) — um ciclo
+  // penduraria o roll-up de custo por etapa. Custos são derivados → não mudam aqui.
   app.put('/api/etapas/:id', requireAuth, wrap(async (req, res) => {
-    const { descricao, codigoEap = null } = req.body || {}
-    if (!descricao || !descricao.trim()) return res.status(400).json({ error: 'Informe a descrição da etapa.' })
-    const upd = await q(
-      'UPDATE orcamento.etapas SET descricao = $2, codigo_eap = $3 WHERE id = $1 RETURNING id',
-      [req.params.id, descricao.trim(), codigoEap || null])
+    const body = req.body || {}
+    // Tipos estritos: um número/array em descricao estourava o .trim() → 500 cru; um array em
+    // codigoEap era serializado pelo pg como literal ('{"1","2"}') e corrompia a EAP em silêncio.
+    const descricao = asStr(body.descricao)
+    const codigoEap = typeof body.codigoEap === 'string' ? body.codigoEap.trim() || null : null
+    if (!descricao) return res.status(400).json({ error: 'Informe a descrição da etapa.' })
+
+    const [atual] = await q('SELECT obra_id AS "obraId" FROM orcamento.etapas WHERE id = $1', [req.params.id])
+    if (!atual) return res.status(404).json({ error: 'Etapa não encontrada.' })
+
+    const mudaPai = Object.hasOwn(body, 'etapaPaiId')
+    const mudaOrdem = Object.hasOwn(body, 'ordem')
+    const paiId = mudaPai ? (body.etapaPaiId || null) : undefined
+
+    if (mudaPai && paiId) {
+      if (!(await etapaDaObra(paiId, atual.obraId))) {
+        return res.status(400).json({ error: 'Etapa pai inválida (precisa ser uma etapa da mesma obra).' })
+      }
+      const todas = await q(
+        'SELECT id, etapa_pai_id AS "etapaPaiId" FROM orcamento.etapas WHERE obra_id = $1', [atual.obraId])
+      if (criaCiclo(todas, req.params.id, paiId)) {
+        return res.status(400).json({ error: 'Hierarquia inválida: a etapa não pode ficar abaixo dela mesma nem de uma descendente.' })
+      }
+    }
+
+    let ordem
+    if (mudaOrdem) {
+      // Number([]) === 0 e Number(true) === 1: sem checar o tipo, um array/booleano passaria.
+      const raw = body.ordem
+      const n = (typeof raw === 'number' || (typeof raw === 'string' && raw.trim() !== '')) ? Number(raw) : NaN
+      if (!Number.isInteger(n)) return res.status(400).json({ error: 'Ordem inválida (informe um número inteiro).' })
+      ordem = n
+    }
+
+    const sets = ['descricao = $2', 'codigo_eap = $3']
+    const params = [req.params.id, descricao, codigoEap]
+    if (mudaPai) { params.push(paiId); sets.push(`etapa_pai_id = $${params.length}`) }
+    if (mudaOrdem) { params.push(ordem); sets.push(`ordem = $${params.length}`) }
+
+    const upd = await q(`UPDATE orcamento.etapas SET ${sets.join(', ')} WHERE id = $1 RETURNING id`, params)
     if (!upd.length) return res.status(404).json({ error: 'Etapa não encontrada.' })
     await registrarLog(req, 'update', 'etapa', req.params.id)
     res.json({ id: req.params.id })
@@ -245,6 +328,23 @@ export function registrarObraDetalhe(app) {
     res.json(produtividade({ itens, area: obra.area }))
   }))
 
+  // ----- Custo por etapa da EAP (RF-D02): R$ e R$/m² com roll-up nas macro-etapas -----
+  // O roll-up é essencial: as macro-etapas não têm itens próprios (o custo vive nas folhas),
+  // então sem somar as descendentes elas apareceriam zeradas. O custo/m² por CATEGORIA já é
+  // servido por /produtividade (RF-D05) — mesma origem de dados, sem duplicar a agregação.
+  app.get('/api/obras/:id/custo-etapas', requireAuth, wrap(async (req, res) => {
+    const [obra] = await q('SELECT area_construida_m2 AS area FROM orcamento.obras WHERE id = $1', [req.params.id])
+    if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+    const etapas = await q(
+      `SELECT id, etapa_pai_id AS "etapaPaiId", codigo_eap AS "codigoEap", descricao, ordem
+       FROM orcamento.etapas WHERE obra_id = $1`, [req.params.id])
+    const itens = await q(
+      `SELECT i.etapa_id AS "etapaId", i.custo_total AS "custoTotal"
+       FROM orcamento.itens_custo i JOIN orcamento.etapas e ON e.id = i.etapa_id
+       WHERE e.obra_id = $1`, [req.params.id])
+    res.json(custoPorEtapa({ etapas, itens, area: obra.area }))
+  }))
+
   // ----- Cronograma físico-financeiro / Curva S (RF-B05) -----
   // Curva S de PREVISTO × REALIZADO. Todo o cálculo vive na função pura curvaS() → nunca 500.
   app.get('/api/obras/:id/curva-s', requireAuth, wrap(async (req, res) => {
@@ -337,8 +437,41 @@ export function registrarObraDetalhe(app) {
       'SELECT filename, mime_type AS "mimeType", data FROM orcamento.anexos WHERE id = $1',
       [req.params.id])
     if (!a) return res.status(404).json({ error: 'Anexo não encontrado.' })
-    res.setHeader('Content-Type', a.mimeType || 'application/octet-stream')
+    res.setHeader('Content-Type', mimeSeguro(a.mimeType))
+    // O mime é escolhido por quem sobe o arquivo; o nosniff impede o browser de reinterpretar
+    // o conteúdo (defesa em profundidade — o attachment já força download).
+    res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('Content-Disposition', contentDispositionAnexo(a.filename))
     res.send(a.data)
+  }))
+
+  // ----- Anexos: ESCRITA (RF-B06) — upload pelo app -----
+  // Corpo = bytes crus (o mime do arquivo); o nome vai em ?filename=. O express.json global
+  // não toca no corpo (content-type não é JSON) e o express.raw daqui o entrega como Buffer.
+  // Acima de ANEXO_UPLOAD_MAX_MB o body-parser corta → 413 (traduzido no handler global).
+  app.post('/api/obras/:id/anexos', requireAuth,
+    express.raw({ type: '*/*', limit: `${ANEXO_UPLOAD_MAX_MB}mb` }),
+    wrap(async (req, res) => {
+      const [obra] = await q('SELECT 1 FROM orcamento.obras WHERE id = $1', [req.params.id])
+      if (!obra) return res.status(404).json({ error: 'Obra não encontrada.' })
+      const buf = req.body
+      if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Arquivo vazio.' })
+      const filename = nomeAnexo(req.query.filename)
+      if (!filename) return res.status(400).json({ error: 'Informe o nome do arquivo (?filename=).' })
+      const mimeType = mimeSeguro(req.headers['content-type'])
+      const id = genId('anx')
+      await q(
+        `INSERT INTO orcamento.anexos (id, obra_id, filename, mime_type, size_bytes, data)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [id, req.params.id, filename, mimeType, buf.length, buf])
+      await registrarLog(req, 'create', 'anexo', id)
+      res.status(201).json({ id, filename, mimeType, sizeBytes: buf.length })
+    }))
+
+  // Exclui um anexo (correção do dia-a-dia, como as demais exclusões de linha → requireAuth).
+  app.delete('/api/anexos/:id', requireAuth, wrap(async (req, res) => {
+    const del = await q('DELETE FROM orcamento.anexos WHERE id = $1 RETURNING id', [req.params.id])
+    if (del.length) await registrarLog(req, 'delete', 'anexo', req.params.id)
+    res.json({ ok: true })
   }))
 }

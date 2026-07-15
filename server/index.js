@@ -19,13 +19,22 @@ import {
 import { mapearCabecalho, montarLinha, validarLinha } from './importacao/mapear.js'
 import { parseSerieIndices } from './importacao/indices.js'
 import { conciliarLista } from './importacao/conciliar.js'
-import { registrarObraDetalhe } from './obraDetalhe.js'
+import { registrarObraDetalhe, ANEXO_UPLOAD_MAX_MB } from './obraDetalhe.js'
 
 const app = express()
 
 const origins = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim()).filter(Boolean)
 app.use(cors({ origin: origins.includes('*') ? true : origins }))
-app.use(express.json({ limit: '10mb' }))
+// O parser JSON global NÃO pode tocar nas rotas que recebem BYTES CRUS: um arquivo .json
+// chega com Content-Type application/json, o express.json consumiria o stream, marcaria
+// req._body e o express.raw da rota faria skip → o upload virava "Arquivo vazio" (400) ou,
+// com JSON malformado, um 500 cru. Aqui ele passa longe delas.
+const ROTA_BINARIA = (req) => req.method === 'POST' && (
+  /^\/api\/obras\/[^/]+\/anexos$/.test(req.path) || req.path === '/api/importacao/analisar')
+app.use(express.json({
+  limit: '10mb',
+  type: (req) => !ROTA_BINARIA(req) && Boolean(req.is('application/json')),
+}))
 
 // API_PORT tem precedência: PORT genérico pode ser injetado por ferramentas de
 // preview/hospedagem no processo inteiro (e o Vite já ocupa essa porta em dev).
@@ -832,7 +841,8 @@ app.get('/api/indicadores', wrap(async (_req, res) => {
            custo_m2_real      AS "custoM2Real",
            fator_desvio_custo AS "fatorDesvioCusto",
            prazo_real_dias    AS "prazoRealDias",
-           prazo_plan_dias    AS "prazoPlanDias"
+           prazo_plan_dias    AS "prazoPlanDias",
+           fator_desvio_prazo AS "fatorDesvioPrazo"
     FROM orcamento.vw_obra_indicadores
     ORDER BY custo_m2_real DESC NULLS LAST`))
 }))
@@ -885,7 +895,8 @@ app.get('/api/dashboard', wrap(async (req, res) => {
   const [geral] = await q(`
     SELECT round(avg(v.custo_m2_real)::numeric, 2) AS "custoM2Medio",
            round(avg(v.fator_desvio_custo)::numeric, 4) AS "desvioCustoMedio",
-           round(avg(v.prazo_real_dias)::numeric, 0) AS "prazoMedioDias"
+           round(avg(v.prazo_real_dias)::numeric, 0) AS "prazoMedioDias",
+           round(avg(v.fator_desvio_prazo)::numeric, 4) AS "desvioPrazoMedio"
     FROM orcamento.obras o
     LEFT JOIN orcamento.vw_obra_indicadores v ON v.id = o.id
     ${fo.where}`, fo.params)
@@ -918,7 +929,8 @@ app.post('/api/comparar', wrap(async (req, res) => {
            o.area_construida_m2 AS "areaConstruidaM2",
            o.custo_orcado_total AS "custoOrcadoTotal", o.custo_real_total AS "custoRealTotal",
            v.custo_m2_real AS "custoM2Real", v.fator_desvio_custo AS "fatorDesvioCusto",
-           v.prazo_real_dias AS "prazoRealDias", v.prazo_plan_dias AS "prazoPlanDias"
+           v.prazo_real_dias AS "prazoRealDias", v.prazo_plan_dias AS "prazoPlanDias",
+           v.fator_desvio_prazo AS "fatorDesvioPrazo"
     FROM orcamento.obras o
     LEFT JOIN orcamento.tipos_obra t ON t.id = o.tipo_obra_id
     LEFT JOIN orcamento.padroes_acabamento p ON p.id = o.padrao_id
@@ -1253,13 +1265,28 @@ app.post('/api/importacao/confirmar', wrap(async (req, res) => {
 registrarObraDetalhe(app)
 
 // ---------- erro ----------
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   console.error('[base-projetos] erro na API:', err.message)
+  // Corpo JSON malformado → 400 (antes vazava a mensagem interna do parser num 500).
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Corpo da requisição inválido (JSON malformado).' })
+  }
   // Traduz erros conhecidos do Postgres em respostas de negócio (evita 500 cru + vazar schema).
   if (err.code === '23503') return res.status(400).json({ error: 'Referência inválida (cliente, tipo, padrão ou localidade inexistente).' })
   if (err.code === '23505') return res.status(409).json({ error: 'Registro duplicado.' })
   if (err.code === '22003' || err.code === '22P02') return res.status(400).json({ error: 'Valor numérico fora da faixa permitida.' })
   if (err.code === '23514') return res.status(400).json({ error: 'Valor fora da faixa permitida.' })
+  // Corpo acima do teto do body-parser → 413 claro em vez de 500 cru. A mensagem é POR ROTA:
+  // o teto do JSON global (10 MB) não é o teto do anexo (25 MB), e falar de "BYTEA/pooler/ETL"
+  // em /api/comparar seria vazar infraestrutura para qualquer autenticado.
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    const ehAnexo = /^\/api\/obras\/[^/]+\/anexos$/.test(req.path || '')
+    return res.status(413).json({
+      error: ehAnexo
+        ? `Arquivo grande demais (limite de ${ANEXO_UPLOAD_MAX_MB} MB no app). Para arquivos maiores, use o ETL (conexão direta).`
+        : 'Requisição grande demais.',
+    })
+  }
   res.status(500).json({ error: err.message })
 })
 
