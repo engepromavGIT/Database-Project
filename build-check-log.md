@@ -1301,3 +1301,65 @@ prazo), RF-C01/C02 (validação na prévia + PDF na web). Bloqueios de dados/inf
 > de upload (a superfície nova de risco): está blindada (413, path/`..`/CRLF, mime estrito, nosniff).
 > Como vocês já rodaram a adversarial (12 defeitos, com repro + testes), não dupliquei o workflow.
 > **Commitei também o `ARQUITETURA.md`** (o `git add` do handoff não o incluía). **Produção intocada.**
+
+---
+
+## Atualização 2026-07-15 — prod-prep: ensaio de migração + rotação da credencial do Neon
+
+Execução do `PRODUCAO.md` com o usuário, passo a passo. **A produção continua NÃO migrada** e o
+módulo **não foi publicado** — isso fica para a próxima janela. Nada de segredo neste log.
+
+### 1. Kit de smoke commitado (`c2ee82f`)
+O `scripts/smoke_deploy.mjs` estava **fora do git** embora o `package.json`/`PRODUCAO.md` já o
+citassem. Commitado com o script `smoke`, a seção do runbook e a entrada no `ARQUITETURA.md` —
+agora quem clonar tem o `npm run smoke` de verdade.
+
+### 2. Ensaio de migração numa cópia real da produção ✅
+Branch-cópia criada a partir da `main` (endpoint `ep-rapid-snow-afhcfiet`), `.env` apontado para ela
+(trava `DB_BRANCH_ESPERADA` ajustada junto) e:
+
+| Verificação | Resultado |
+|---|---|
+| Sonda **antes** | ✅ veredito **"tem o app (9 users), NÃO tem `orcamento`"** = cara de produção, não migrada → alvo certo |
+| `npm run migrate` | ✅ cadeia **001→013 limpa** sobre os dados reais do app |
+| Sonda **depois** | ✅ `orcamento` 19 objetos / 0 obras · **`public.users` intacto (9)** → as migrations **não tocam `public`** |
+| `migrate` 2ª vez | ✅ **idempotente** sobre dados reais (o fix do `DROP VIEW` da 001 confirmado fora da dev) |
+
+Ao fim, `.env` **restaurado para a dev** (a partir de backup) e a branch de ensaio **apagada**.
+**Conclusão: a migração está validada para a produção.**
+
+### 3. Rotação da credencial do Neon ✅ (a dívida mais antiga)
+- Senha do `neondb_owner` **resetada na `main` (produção)** no console do Neon (ação do usuário).
+- **Escopo medido empiricamente:** a sonda na dev **continuou conectando** → o reset é **por branch**;
+  a **dev seguiu com a senha antiga** (branch interna; rotacionar lá é opcional).
+- **Efeito colateral previsto e confirmado:** o app em produção **caiu** (o `promav-api` no Render ainda
+  tinha a senha velha) — o check do `/api/health` deu `UND_ERR_SOCKET` após 60s (não era cold start).
+- Usuário atualizou a `DATABASE_URL` no Render → **app de volta**: `/api/health` → **`200 {"ok":true}`
+  em 1,1s** (o `SELECT now()` passou = reconectou com a senha nova).
+
+> **Aprendizado para o runbook:** rotacionar a senha da prod **derruba o app ao vivo** até a env do
+> `promav-api` no Render ser atualizada. É operação **coordenada, em janela** — vale explicitar isso
+> no `PRODUCAO.md` (hoje ele só diz "atualizar a DATABASE_URL depois").
+
+### Estado ao fim do dia
+- Git limpo e sincronizado com `origin/main`; `.env` local de volta na **dev** (`ep-restless-dawn`).
+- **Produção:** credencial **nova**, app **saudável**, schema `orcamento` **ainda não existe lá**.
+- Senha antiga (a que vazou em texto) **não abre mais a produção**.
+
+### Próxima janela (passos 3 e 4 do `PRODUCAO.md`)
+1. **Migrar a produção:** branch de backup **nova e intocada** a partir da `main` (rollback — a de
+   ensaio não serve, foi migrada) → `.env` na prod (senha **nova**) → **sonda** ("tem app, não tem
+   `orcamento`") → `migrate` → sonda.
+2. **Publicar o módulo:** Blueprint do `render.yaml` → os 4 `sync:false` (`DATABASE_URL` da prod com a
+   senha nova · `JWT_SECRET` **idêntico** ao do `promav-api`, **nunca** `generateValue: true` ·
+   `CORS_ORIGIN` · `VITE_API_URL`) → **`npm run smoke`** (health, gate 401, CORS, login, SSO, site).
+
+### Para o Cowork
+> Dia de infra, sem código de feature. O **ensaio validou a migração contra uma cópia real da prod**
+> (001→013 limpa + idempotente, `public.users` intacto) — a migração da produção está pronta para a
+> janela. A **credencial do Neon foi rotacionada** (dívida antiga fechada): a senha vazada não abre
+> mais a prod, e o app voltou (`200 {ok:true}`) depois de atualizar a env no Render. **Atenção que o
+> `PRODUCAO.md` subestima um ponto:** resetar a senha **derruba o app** até o Render ser atualizado —
+> sugiro registrarem isso no runbook. A sonda + a trava `DB_BRANCH_ESPERADA` de vocês funcionaram
+> muito bem: em todo momento deu pra saber o alvo antes de escrever. **Produção ainda não migrada e
+> módulo não publicado** — próximos passos na próxima janela.
