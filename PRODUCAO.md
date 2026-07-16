@@ -34,15 +34,22 @@ No console do Neon, **crie uma branch a partir da produção** (`main`). No Neon
 e serve tanto de snapshot quanto de ambiente de ensaio. Anote o nome — ex.: `pre-migracao-modulo`.
 (Alternativa: confirmar que o PITR/restore da prod está ativo e qual é a janela.)
 
+> ⚠️ Para a **migração real**, crie uma branch de backup **nova e intocada**. A branch do ensaio de
+> 15/07 **não serve de rollback** — ela já foi migrada (tem o schema `orcamento`), então restaurar a
+> partir dela reintroduziria as tabelas. O rollback tem que ser um retrato da prod **antes** de
+> qualquer migração.
+
 ### 1. Ensaio geral na cópia da produção (obrigatório)
 
 Não migre a produção direto. **Migre primeiro a cópia** — ela tem exatamente os dados reais do
 app, que a dev não tem.
 
 ```bash
-# .env apontando para a BRANCH-CÓPIA da produção:
-DATABASE_URL=<connection string da branch pre-migracao-modulo>
-DB_BRANCH_ESPERADA=<trecho do host dessa branch>   # ex.: ep-xxxx-yyyy
+# .env apontando para a BRANCH-CÓPIA da produção.
+# NUNCA cole a senha real aqui — este arquivo é versionado. Pegue a string no Neon
+# (branch → Connect → Pooled) e mantenha-a só no .env, que é ignorado pelo git.
+DATABASE_URL=<connection string da branch de backup/ensaio>   # ex.: postgresql://neondb_owner:<SENHA>@ep-xxxx-yyyy-pooler.<região>.aws.neon.tech/neondb?sslmode=require
+DB_BRANCH_ESPERADA=<trecho do host dessa branch>              # ex.: ep-xxxx-yyyy
 
 npm run sonda        # deve dizer: tem app, NÃO tem schema do módulo  → é o cenário da prod
 npm run migrate      # 001→013
@@ -92,14 +99,29 @@ no dashboard do Render**, não no código.
 > O formato do token já é compatível: os dois assinam `{ sub: user.id }` e leem `payload.sub`.
 > Só o segredo precisava bater.
 
-## Rotação da credencial do Neon — pendente
+## Rotação da credencial do Neon — ✅ feita em 2026-07-15 (runbook para as próximas)
 
-A senha do banco circulou em texto claro (em `.env` e handoffs). Rotacione:
+A senha do banco havia circulado em texto claro (em `.env` e handoffs). A rotação da **produção**
+foi feita em 15/07; a senha vazada **não abre mais a prod**. Guia para repetir (ou rotacionar
+outras branches):
 
-1. Neon → **Roles** → resetar a senha do role usado pela aplicação.
-2. Atualizar a `DATABASE_URL` em: `.env` local (dev), `.env` local do app, e as variáveis de
-   ambiente do Render (app **e** módulo).
-3. Confirmar com `npm run sonda` (e o `/api/health` do app) antes de encerrar.
+> ⚠️ **RESETAR A SENHA DERRUBA O APP AO VIVO.** É uma operação **coordenada, em janela** — não a
+> faça no meio do expediente. No momento em que a senha muda no Neon, o serviço que ainda usa a
+> senha antiga (o `promav-api` no Render) **para de conectar** e o app cai (visto em 15/07:
+> `/api/health` deu `UND_ERR_SOCKET`, **não** era cold start). O app **só volta** depois que você
+> atualiza a `DATABASE_URL` no Render — aí o `/api/health` responde `200 {ok:true}` de novo (o
+> `SELECT now()` reconectou). Tenha o novo valor **em mãos** antes de resetar, para o intervalo de
+> queda ser de segundos.
+
+1. Neon → **Roles** → resetar a senha do role da aplicação (`neondb_owner`). **Copie a nova senha.**
+2. **Imediatamente** atualizar a `DATABASE_URL` (com a senha nova) no **Render → `promav-api` →
+   Environment** — é isso que reergue o app. Depois, atualizar também: `.env` local do app,
+   e — quando o módulo estiver publicado — a `DATABASE_URL` do serviço do módulo no Render.
+3. Confirmar: `/api/health` do app → `200 {ok:true}`, e `npm run sonda` conecta.
+
+> **O reset é por branch.** Medido em 15/07: resetar a senha da `main` (prod) **não** derrubou a
+> conexão da branch de **dev** (`ep-restless-dawn`) — ela seguiu com a senha antiga. Rotacionar a
+> dev é opcional (branch interna); se fizer, atualize o `.env` local do módulo também.
 
 ## Publicar o módulo — `render.yaml` (pronto)
 
@@ -189,9 +211,12 @@ script.)*
 
 ## Ordem recomendada
 
-1. **Rotacionar a credencial do Neon** (a mais antiga das dívidas; e você vai mexer nas envs de
-   qualquer jeito nos passos seguintes — faça de uma vez).
-2. **Ensaio + migração da produção** (passos 0–2).
-3. **`render.yaml` do módulo + JWT do Render** → publicar → **`npm run smoke`** para confirmar.
-4. Só então: carregar mais orçamentos e a série SINAPI — com o módulo no ar, cada obra nova já
+1. ~~**Rotacionar a credencial do Neon**~~ — ✅ **feito em 15/07** (a senha vazada não abre mais a prod).
+2. ~~**Ensaio da migração** numa cópia real da prod~~ — ✅ **feito em 15/07** (001→013 limpa +
+   idempotente, `public.users` intacto). A migração está **validada**.
+3. **Migrar a produção de verdade** (passos 0–2): backup **novo** → `.env` na prod (senha **nova**)
+   → `sonda` → `migrate` → `sonda`. *(Falta.)*
+4. **Publicar** o módulo (`render.yaml` + os 4 `sync:false`, JWT **idêntico** ao do app) → **`npm run
+   smoke`** para confirmar. *(Falta.)*
+5. Só então: carregar mais orçamentos e a série SINAPI — com o módulo no ar, cada obra nova já
    melhora a estimativa para quem usa.
