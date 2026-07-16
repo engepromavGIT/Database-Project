@@ -1363,3 +1363,73 @@ Ao fim, `.env` **restaurado para a dev** (a partir de backup) e a branch de ensa
 > sugiro registrarem isso no runbook. A sonda + a trava `DB_BRANCH_ESPERADA` de vocês funcionaram
 > muito bem: em todo momento deu pra saber o alvo antes de escrever. **Produção ainda não migrada e
 > módulo não publicado** — próximos passos na próxima janela.
+
+---
+
+## Atualização 2026-07-16 — 🚀 PRODUÇÃO MIGRADA E MÓDULO PUBLICADO (passos 3 e 4 do `PRODUCAO.md`)
+
+**O runbook foi executado até o fim. O módulo está no ar.**
+
+### 3. Migração da produção ✅
+| Etapa | Resultado |
+|---|---|
+| Backup | Branch **`backup`** criada a partir da `main` — **nova e intocada** (rollback de verdade) |
+| Sonda **antes** | ✅ veredito **"tem o app, NÃO tem `orcamento`"** = prod confirmada como alvo |
+| `npm run migrate` | ✅ cadeia **001→013 limpa** contra a **produção** |
+| Sonda **depois** | ✅ `orcamento` **19 objetos / 0 obras** · `public.users` **intacto** |
+| App Promav | ✅ `/api/health` → **200 `{ok:true}`** — as migrations não afetaram o app ao vivo |
+
+`.env` restaurado para a dev ao fim. A `backup` **fica de pé** como rollback até o módulo provar estabilidade.
+
+### 4. Publicação do módulo ✅ (Render Blueprint)
+Blueprint do `render.yaml` sincronizado no commit `bc67f5e` → dois serviços:
+`promav-orcamento-api` (Node) + `promav-orcamento-web` (static/SPA).
+
+**Dois tropeços, ambos de configuração — o código estava certo:**
+
+1. **API não subiu no 1º deploy:** `[promav] DATABASE_URL não definida` + `[base-projetos] FATAL:
+   JWT_SECRET não definido em produção`. **Era a trava funcionando como projetada** — os 4 `sync:false`
+   existem justamente para o deploy falhar alto em vez de subir inseguro. Usuário preencheu → subiu.
+2. **CORS bloqueando tudo:** o smoke acusou `allow-origin: (ausente)`. Diagnóstico por sondagem de
+   origens (probe de 5 candidatas contra o `/api/health`): a API refletia **a URL dela mesma** →
+   o `CORS_ORIGIN` tinha sido preenchido com a URL da **API** em vez da URL do **site**
+   (`-api` vs `-web`, fácil de trocar). Corrigido → refletiu.
+
+> **Regra para o runbook:** **API recebe a URL do site** (`CORS_ORIGIN` → `-web`) · **site recebe a URL
+> da API** (`VITE_API_URL` → `-api`). E `VITE_API_URL` **é embutida no build** — mudar a env exige
+> *Manual Deploy → Clear build cache & deploy*, salvar sozinho não faz nada.
+
+### `npm run smoke` — **6 ok · 0 falhou** ✅
+| Check | Resultado |
+|---|---|
+| `GET /api/health` | ✅ **200 `{ok:true, now}`** — banco de **produção** respondendo |
+| `GET /api/obras` sem token | ✅ **401** — gate ativo |
+| CORS | ✅ reflete `https://promav-orcamento-web.onrender.com` |
+| Login real + leitura | ✅ (rodado pelo usuário com `SMOKE_EMAIL`/`SMOKE_PASSWORD`) |
+| **SSO** | ✅ token emitido **pelo app** aceito **pelo módulo** → `JWT_SECRET` idêntico **provado em prod** |
+| `GET` site | ✅ **200** com o HTML da SPA |
+
+O kit de smoke do Cowork (`c2ee82f`) **pagou o investimento**: pegou o CORS quebrado antes do usuário,
+e os 2 checks de credencial rodaram na máquina do usuário — **nenhuma senha passou pelo assistente**.
+
+### Estado
+- **Produção:** schema `orcamento` **migrado** (19 objetos, 0 obras) · credencial **rotacionada** ·
+  app Promav **saudável** · módulo **publicado e verificado de ponta a ponta**.
+- Git limpo, sincronizado com `origin/main`. `.env` local na **dev** (`ep-restless-dawn`).
+- Branch **`backup`** viva (rollback). **Apagar só quando o módulo estiver estável em uso real.**
+
+### Backlog (agora que a infra saiu do caminho)
+- **Código:** RF-F04 (bottom-up não grava `nivel_confianca_pct`), RF-F05 (faixa O–P de prazo na UI),
+  RF-C01/C02 (validação no preview + PDF no web).
+- **Dados:** séries reais SINAPI/INCC — o importador em lote (RF-A06) está pronto, **é só colar**.
+  Sem elas, os índices seguem sintéticos. PDFs variados para robustez do parser.
+
+### Para o Cowork
+> **O módulo está em produção.** Runbook de vocês executado inteiro: ensaio → rotação → migração da
+> prod (001→013 limpa, `public.users` intacto, app ao vivo sem arranhão) → Blueprint → **smoke 6/6,
+> SSO inclusive**. Os dois problemas do dia foram **de env, não de código**: o `FATAL: JWT_SECRET`
+> foi a trava de vocês fazendo exatamente o trabalho dela, e o CORS era a URL da API no lugar da URL
+> do site — sugiro fixar no `PRODUCAO.md` o mnemônico **"API recebe a URL do site; site recebe a URL
+> da API"** e o aviso de que `VITE_API_URL` só entra em vigor com *clear build cache*. A `backup`
+> segue viva como rollback. **A frente de infra está fechada; o caminho está livre para features
+> (RF-F04/F05/C01/C02) e para os dados reais de índice.**
