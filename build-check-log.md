@@ -1433,3 +1433,92 @@ e os 2 checks de credencial rodaram na máquina do usuário — **nenhuma senha 
 > da API"** e o aviso de que `VITE_API_URL` só entra em vigor com *clear build cache*. A `backup`
 > segue viva como rollback. **A frente de infra está fechada; o caminho está livre para features
 > (RF-F04/F05/C01/C02) e para os dados reais de índice.**
+
+---
+
+## Atualização 2026-07-16 — Correção: estimativa paramétrica gravava `custo_provavel = NULL`
+
+**Executado por:** Claude Code · Node v24.18.0 / npm 11.16.0 · worktree `festive-cray-47bd31`
+
+| Comando | Resultado | Observações |
+|---------|-----------|-------------|
+| npm run check | ✅ | `node --check` OK nos 15 arquivos |
+| npm test | ✅ | **246 passou, 0 falhou** (240 antes; +6 de regressão) |
+| npm run build | ✅ | vite — 247,07 kB (gzip 68,26) em 435ms |
+
+### O bug (confirmado por probe, não hipótese)
+
+A paramétrica podia gravar `custo_provavel = NULL` **com `custo_otimista` e `custo_pessimista`
+preenchidos** — e responder **201 como se tudo tivesse dado certo**.
+
+Cadeia, ponta a ponta:
+1. `mediaPonderada` (`server/estimativa/metodos.js:14`) devolve `null` quando a soma dos pesos é 0
+   (`den > 0 ? num/den : null`).
+2. Em `POST /api/estimativas` a paramétrica passa **o escore de similaridade como peso**
+   (`estimarParametrico(analogas.map(a => ({ custoM2: a.custoM2, peso: a.escore })), ...)`).
+3. `escoreSimilaridade` **pode dar exatamente 0** — confirmado com inputs reais: tipo de obra
+   diferente + padrão a 2 de distância (popular vs alto) + área com diferença ≥ 100% + localidade e
+   UF diferentes + obra 10+ anos mais velha (`recencia` zera aos 10 anos em `server/index.js:141`).
+4. Todas as análogas com escore 0 → `custoM2Prov` null → `M` null → `esperado` null. Mas `O` e `P`
+   vêm de `percentil()`, que **ignora o peso**, e saem preenchidos.
+
+```
+estimarParametrico([{ custoM2: 2800, peso: 0 }], 1000)
+// => { custoM2Prov: null, O: 2800000, M: null, P: 2800000, esperado: null }
+```
+
+**Impacto:** `POST /api/estimativas/:id/realizado` fazia `Number(est.custo_provavel) || 0` → 0 →
+`erro_pct` null **em silêncio**, e a calibração (RF-F08) nunca fechava para essa estimativa. As telas
+"Estimativas salvas" e Cenários mostravam "—" no custo provável. O mesmo furo atingia o prazo.
+
+### O que foi feito
+
+**1. `server/index.js` — `POST /api/estimativas` (paramétrica):** recusa com **400** quando a soma dos
+escores das análogas selecionadas é 0, em vez de gravar a estimativa pela metade:
+> *"As obras selecionadas não têm similaridade suficiente com o alvo. Refine o tipo/padrão/área ou
+> escolha outras referências."*
+
+O guard fica **depois** do filtro por `obraIds` (julga as análogas realmente escolhidas, não o top-5) e
+**antes** do `estimarParametrico`/INSERT.
+
+**2. `server/index.js` — `POST /api/estimativas/:id/realizado`:** recusa com **400** quando a estimativa
+não tem custo provável, em vez de gravar o realizado com `erro_pct` null. Isso cobre as **linhas legadas**
+que já possam estar no banco com `custo_provavel = NULL` — o guard novo só protege gravações futuras.
+
+**3. `tests/estimativa.test.mjs`:** +6 asserções travando (a) que `escoreSimilaridade` chega a 0 com
+inputs reais e (b) que `estimarParametrico`/`estimarPrazo` com todos os pesos 0 devolvem `M`/`esperado`
+null enquanto `O`/`P` seguem preenchidos — a armadilha exata que motiva o guard.
+
+### Decisão de projeto: `mediaPonderada` **não** virou média simples
+
+Cogitou-se o fallback para média simples quando todos os pesos são 0. **Rejeitado:** escore 0 significa
+que *nenhuma* obra se parece com o alvo — uma média simples produziria um número de aparência
+respeitável a partir de referências irrelevantes, **mascarando** o problema em vez de expô-lo. O `null`
+é o sinal honesto; o endpoint é que deve recusar. Teste explícito trava esse comportamento.
+
+### Limite desta verificação (o que **não** foi provado)
+
+Os dois guards **não têm teste automatizado de HTTP**: a suíte é só de funções puras (sem harness de
+endpoint) e **não existe `.env` local** — sem `DATABASE_URL` de dev, o handler não roda. Não fui atrás de
+credencial de produção para isso, e o `.env.example` é explícito: *"Nunca aponte para o banco de PRODUÇÃO
+durante o desenvolvimento."* Verificado: o núcleo puro por probe com as funções reais, `node --check` no
+`index.js` e leitura do fluxo de controle. **Os 400 em si nunca foram exercidos contra um banco.**
+
+## Para o Cowork (Claude)
+> Fechei um furo silencioso da paramétrica: quando **todas** as análogas selecionadas têm escore de
+> similaridade **0**, o custo provável saía `null` (porque o escore é o peso da média ponderada) enquanto
+> otimista/pessimista saíam preenchidos — e a API respondia **201**. A estimativa nascia pela metade e
+> ficava fora da calibração (RF-F08) sem avisar ninguém. Agora são dois **400**: um no `POST /api/estimativas`
+> (soma dos escores == 0) e outro no `/realizado` (sem custo provável não há base para o erro — esse cobre
+> linhas legadas que já estejam NULL no banco). **Deixei `mediaPonderada` como está de propósito** — cair
+> para média simples daria um número bonito em cima de obras que não se parecem com o alvo, escondendo o
+> problema; o `null` é o sinal certo, quem decide é o endpoint. 246 testes verdes.
+>
+> **Dois pedidos.** (1) Vale conferir se há estimativas com `custo_provavel IS NULL` **já gravadas na
+> produção** — o guard só protege daqui pra frente, e o `/realizado` agora vai recusá-las com 400 (é o
+> comportamento correto, mas alguém pode topar com isso na tela). Query: `SELECT id, descricao, criado_em
+> FROM orcamento.estimativas WHERE metodo = 'parametrica' AND custo_provavel IS NULL`. (2) **Os dois guards
+> não têm teste de HTTP** — a suíte só cobre funções puras e não tenho `.env`/banco de dev nesta worktree,
+> então exercitei o núcleo por probe mas **nunca disparei os 400 de verdade**. Se vocês têm ambiente com a
+> branch dev do Neon, valeria um teste de endpoint; talvez seja hora de um harness de HTTP no projeto, que
+> hoje é um ponto cego.

@@ -1033,6 +1033,14 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     : analogas.slice(0, 5)
   if (!analogas.length) return res.status(400).json({ error: 'Nenhuma obra análoga elegível encontrada.' })
 
+  // Os escores são os pesos da média ponderada: se todos forem 0, o custo provável sai null
+  // (mas O e P, que vêm de percentil e ignoram peso, sairiam preenchidos) e a estimativa seria
+  // gravada pela metade, sem custo provável e sem chance de calibração (RF-F08).
+  const somaEscores = analogas.reduce((s, a) => s + a.escore, 0)
+  if (!(somaEscores > 0)) {
+    return res.status(400).json({ error: 'As obras selecionadas não têm similaridade suficiente com o alvo. Refine o tipo/padrão/área ou escolha outras referências.' })
+  }
+
   const custo = estimarParametrico(analogas.map((a) => ({ custoM2: a.custoM2, peso: a.escore })), alvo.areaAlvoM2)
   const prazo = estimarPrazo(analogas.map((a) => ({ valor: a.diasM2, peso: a.escore })), alvo.areaAlvoM2)
   const simMedia = analogas.reduce((s, a) => s + a.escore, 0) / analogas.length
@@ -1180,7 +1188,12 @@ app.post('/api/estimativas/:id/realizado', wrap(async (req, res) => {
   const [est] = await q('SELECT custo_provavel FROM orcamento.estimativas WHERE id = $1', [req.params.id])
   if (!est) return res.status(404).json({ error: 'Estimativa não encontrada.' })
   const prov = Number(est.custo_provavel) || 0
-  const erro = prov > 0 ? round2(((Number(custoRealizado) - prov) / prov) * 100) : null
+  // Sem custo provável não há base para o erro: recusa em vez de gravar o realizado com erro_pct null,
+  // o que deixaria a estimativa fora da calibração sem nenhum sinal para o usuário.
+  if (!(prov > 0)) {
+    return res.status(400).json({ error: 'Esta estimativa não tem custo provável e não pode ser calibrada. Gere a estimativa novamente com obras de referência mais similares.' })
+  }
+  const erro = round2(((Number(custoRealizado) - prov) / prov) * 100)
   await q('UPDATE orcamento.estimativas SET custo_realizado = $2, erro_pct = $3 WHERE id = $1',
     [req.params.id, custoRealizado, erro])
   await registrarLog(req, 'update', 'estimativa', req.params.id)
