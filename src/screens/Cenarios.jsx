@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, pct, prazoDias, faixaPrazo } from '../data/format.js'
+import { brl, pct, prazoDias, faixaPrazo, faixaCusto } from '../data/format.js'
 
 async function abrirPdf(id) {
   const blob = await api.estimativaPdf(id)
@@ -25,7 +25,7 @@ export function Cenarios() {
   const linhas = [
     ['Método', (v) => v.metodo],
     ['Custo provável', (v) => brl(v.custoProvavel)],
-    ['Faixa de custo (O–P)', (v) => `${brl(v.custoOtimista)} — ${brl(v.custoPessimista)}`],
+    ['Faixa de custo (O–P)', (v) => faixaCusto(v.custoOtimista, v.custoPessimista)],
     ['Prazo provável', (v) => prazoDias(v.prazoProvavelDias)],
     // RF-F05 — faixa de prazo, simétrica à de custo.
     ['Faixa de prazo (O–P)', (v) => faixaPrazo(v.prazoOtimistaDias, v.prazoPessimistaDias)],

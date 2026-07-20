@@ -1,6 +1,6 @@
 // Testes dos formatadores compartilhados das telas. Rode: node tests/format.test.mjs
 // format.js é puro (só Intl) e roda no node sem DOM.
-import { brl, num, pct, desvioPct, monthToDate, prazoDias, faixaPrazo, aderenciaTexto } from '../src/data/format.js'
+import { brl, num, pct, desvioPct, monthToDate, prazoDias, faixaPrazo, faixaCusto, aderenciaTexto } from '../src/data/format.js'
 import { estatisticaAderencia } from '../server/estimativa/metodos.js'
 
 let pass = 0, fail = 0
@@ -37,6 +37,19 @@ eq(faixaPrazo('120', 120), '120 dias (sem dispersão)', 'faixa degenerada com st
 // mesmo com o provável ausente — é o defeito que o RF-F05 corrige.
 eq(prazoDias(null), '—', 'parcial invertido: provável ausente → "—"')
 eq(faixaPrazo(53, 77), '53 — 77 dias', 'parcial invertido: faixa aparece mesmo sem o provável')
+
+// --- faixaCusto (espelho de faixaPrazo, com brl) ---
+eq(faixaCusto(1000, 2000), 'R$\u00a01.000,00 — R$\u00a02.000,00', 'faixa de custo normal O<P')
+eq(faixaCusto(null, null), '—', 'faixa de custo sem O nem P')
+eq(faixaCusto(null, 2000), '—', 'faixa de custo com O nulo')
+eq(faixaCusto(1000, null), '—', 'faixa de custo com P nulo')
+eq(faixaCusto(1500, 1500), 'R$\u00a01.500,00 (sem dispersão)', 'faixa de custo degenerada O===P')
+// o pg devolve numeric como STRING: '1500' === 1500 é falso e imprimiria a faixa falsa
+eq(faixaCusto('1500', 1500), 'R$\u00a01.500,00 (sem dispersão)', 'faixa de custo degenerada com string do pg')
+eq(faixaCusto('1000.00', '2000.00'), 'R$\u00a01.000,00 — R$\u00a02.000,00', 'faixa de custo com strings do pg')
+// caso do bug: provável (esperado) null mas O/P sobrevivem — a faixa carrega o intervalo legítimo
+eq(faixaCusto(442678.30, 616575), 'R$\u00a0442.678,30 — R$\u00a0616.575,00', 'parcial: faixa de custo aparece mesmo sem o provável')
+
 
 // --- pct: nivel_confianca_pct é numeric(5,2) e o pg o devolve como STRING ("85.00").
 // O template cru `${v}%` imprimia "85.00%" na lista/cenários e "85%" no card recém-gerado.

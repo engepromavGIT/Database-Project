@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, pct, monthToDate, prazoDias, faixaPrazo, aderenciaTexto } from '../data/format.js'
+import { brl, pct, monthToDate, prazoDias, faixaPrazo, faixaCusto, aderenciaTexto } from '../data/format.js'
 
 const escorePct = (e) => `${Math.round((e || 0) * 100)}%`
 const corConf = (r) => (r === 'Alta' ? 'var(--info)' : r === 'Média' ? 'var(--prio-medium)' : 'var(--danger)')
@@ -198,7 +198,7 @@ export function Estimativa() {
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Custo provável</div>
                 <strong style={{ fontSize: 20 }}>{brl(resultado.custo.esperado)}</strong></div>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Faixa de custo (O–P)</div>
-                <div>{brl(resultado.custo.O)} — {brl(resultado.custo.P)}</div></div>
+                <div>{faixaCusto(resultado.custo.O, resultado.custo.P)}</div></div>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Preço c/ BDI {resultado.bdiPct}%</div>
                 <div>{brl(resultado.preco)}</div></div>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Prazo provável</div>

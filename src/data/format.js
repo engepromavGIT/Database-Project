@@ -31,6 +31,18 @@ export const faixaPrazo = (o, p) => {
   return `${num(o)} — ${num(p)} dias`
 }
 
+// Faixa de custo otimista–pessimista. Espelha faixaPrazo (contrato idêntico), com brl:
+// null de um dos lados → '—'; O === P (uma única referência, ou histórico sem dispersão) NÃO
+// vira "R$ x — R$ x" (faixa falsa) → "R$ x (sem dispersão)". Number() nos dois lados porque o
+// pg devolve numeric como STRING — '100' === 100 é falso e imprimiria a faixa degenerada.
+// Onde o provável (esperado) é null mas O/P sobrevivem (todas as análogas com escore 0), esta
+// faixa carrega o intervalo legítimo que a linha "Custo provável" mostraria como '—'.
+export const faixaCusto = (o, p) => {
+  if (o == null || p == null) return '—'
+  if (Number(o) === Number(p)) return `${brl(o)} (sem dispersão)`
+  return `${brl(o)} — ${brl(p)}`
+}
+
 // Aderência histórica do bottom-up (RF-F04), a partir do payload { fator, desvio, n, desvioMedido,
 // tipoFiltrado }. estatisticaAderencia fabrica um desvio de 0,1 quando não tem como medi-lo, e o
 // fator e o desvio NÃO nascem juntos: com 1 obra o fator já é medido, mas o desvio ainda é a mesma
