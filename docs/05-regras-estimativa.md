@@ -94,6 +94,25 @@ Monta o orçamento item a item a partir das composições de referência (SINAPI
 das quantidades do projeto novo. Mais trabalhosa e mais precisa; o histórico entra como
 **aderência** (quanto o realizado costuma divergir do orçado por etapa — fator de ajuste).
 
+> **Limitação conhecida — a largura da faixa com menos de 2 obras encerradas.**
+> A aderência devolve `fator ± desvio`, e a faixa O–P do bottom-up é
+> `custo_direto × (fator ∓ desvio)`. Mas o **desvio só é medido a partir de 2 obras**: abaixo
+> disso vem a constante **0,1** (o mesmo default do acervo vazio). Logo, num acervo novo, a
+> **largura inteira** da faixa é uma suposição de ±10%, não uma observação — só o `fator` é medido.
+>
+> Onde isso está sinalizado e onde não está:
+> - **Card recém-gerado:** ressalvado. Mostra "±0,1 assumido — desvio não medido" ao lado da faixa.
+> - **Estimativa salva** (cenários, lista, PDF, integração): **não ressalvado**. A tabela
+>   `orcamento.estimativas` não persiste `n` nem se o desvio foi medido, então ao reler do banco
+>   uma faixa assumida é indistinguível de uma medida. O único sinal indireto é o
+>   `nivel_confianca_pct` **= 30** (a base), que num bottom-up significa n < 3 — pista de "não
+>   calibrado", mas grosseira: não separa n=1 (desvio assumido) de n=2 (medido, porém fraco).
+>
+> Correção completa, quando o schema for mexido de novo: persistir `aderencia_n` e
+> `aderencia_desvio_medido` (nullable, retrocompatível) e ressalvar na leitura como o card faz.
+> Enquanto isso, ao comparar bottom-ups salvos, **trate a faixa de qualquer um com confiança 30%
+> como largura arbitrada**.
+
 ### 3.4 Faixa por 3 pontos (PERT)
 
 Qualquer método acima vira **faixa**. Com otimista (O), mais provável (M) e pessimista (P):

@@ -1526,3 +1526,92 @@ carregar mais orçamentos — cada obra encerrada melhora a estimativa de quem j
 > (`desvioMedido`), em vez de cada tela reimplementar o limiar. Vale a pena olhar se há outros lugares
 > onde um default de `estatisticaAderencia`/`estimarBottomUp` chega à tela sem ressalva — a largura da
 > faixa O–P do bottom-up com n=1, por exemplo, é inteiramente derivada do `desvio = 0,1` assumido.
+
+---
+
+## Atualização 2026-07-20 (2) — RF-C01/C02: validação antecipada para a prévia da importação
+
+Último item do backlog de código. O defeito era literal: `validarLinha` só aparecia **dentro do
+`/confirmar`**. A prévia mostrava 10 linhas bonitas, o botão dizia "Importar 500 linha(s)", e o
+usuário só descobria as 80 rejeitadas **depois** de mandar gravar.
+
+### O que mudou
+- **Avisos** (`validarLinha` agora devolve `{ ok, erros, avisos }`). A linha grava, mas não serve
+  para algum uso — a diferença entre "importei 200 obras" e "importei 200 obras das quais 140 nunca
+  vão aparecer numa estimativa". Com o acervo em 0 e o `DADOS.md` prestes a carregar dados reais,
+  isso deixa de ser teórico.
+- **Outlier de aderência** (`RATIO_SUSPEITO = 3`): um `1.200.000` digitado como `1200000000` não era
+  barrado por nada e envenena todo bottom-up futuro daquele tipo de obra.
+- **`/analisar` valida TODAS as linhas** (a prévia mostra 10, o erro pode estar na 500) e devolve
+  `resumo`, `problemas` (erros por linha), `avisos` (agregados) e `cadastrosFaltando`.
+- **`cadastrosFaltando`**: o `/confirmar` resolve tipo/padrão/localidade **por nome** e grava `NULL`
+  em silêncio quando não acha — a obra entra sem tipo e some das análogas. Risco concreto: o catálogo
+  tem `Industrial/Comercial/…` e nenhum `Galpão`; em CE só existe `Umari`.
+- **UI**: chips de resumo, blocos de erro/aviso, chip "erro"/⚠ na própria prévia (RF-C01: "linhas
+  inválidas sinalizadas"), e o botão passou a dizer a verdade — "Importar N válida(s) de M",
+  desabilitado quando `validas === 0`.
+
+### Duas decisões contra o primeiro impulso
+1. **Zero virou aviso, não erro.** Marcar `área zero`/`custo real zero` como erro rejeitaria linhas
+   que hoje importam — quem reimportasse a mesma planilha (RF-C04) veria obras sumirem. Zero é dado
+   inútil, não contraditório.
+2. **Cadastro faltando saiu do por-linha.** A 1ª versão repetia o aviso em cada linha; o probe mostrou
+   7 linhas com o mesmo ruído e o `divergem 1000×` soterrado. Agregado com contagem, vira ação única.
+
+### O que a revisão adversarial pegou — 10 confirmados, **4 ALTA com 0/3 refutações**
+**O defeito central foi meu, e é o mesmo pecado que persegui a sessão inteira: escrevi avisos que
+afirmam consequências FALSAS**, deduzindo o que *deveria* acontecer em vez de ler a query real.
+
+O `CAND` da paramétrica é `COALESCE(NULLIF(custo_real_total, 0), custo_orcado_total) > 0`. Ou seja:
+uma obra **sem custo real ENTRA** na estimativa — usando o **orçado**, que o CAND ainda aliasa como
+`"custoRealTotal"`. Meu aviso dizia *"não entrará em estimativa paramétrica"*: o **oposto da
+verdade**, tranquilizando o usuário sobre uma linha que vai **puxar a estimativa** com número de
+orçamento. Idem para `custo real zero` (o `NULLIF` faz o zero cair no mesmo COALESCE) e para
+`área zero — não entrará em NENHUMA estimativa` (a `aderenciaHistorica` não filtra por área).
+
+Correções, todas ancoradas nas queries e não em suposição:
+| Achado | Correção |
+|---|---|
+| "sem custo real → fica de fora" (ALTA, 0/3) | Espelha o COALESCE: avisa a **substituição** ("o ORÇADO será usado como se fosse realizado"); "fica de fora" só quando **nenhum** dos dois custos existe |
+| "custo real zero → nenhuma estimativa" (ALTA, 0/3) | Mesmo COALESCE via `NULLIF` |
+| "área zero → nenhuma estimativa" (MEDIA) | Diz de onde sai **e onde ainda conta** (aderência) |
+| custo orçado **zero** não avisava (MEDIA) | `== null` não pega `0` — e `numero("n/a")` é `0`. Trocado por `!(x > 0)` |
+| Corte em 100 preservava 96 repetições e **descartava** o outlier da linha 480 (ALTA) | Avisos **agregados por texto** com contagem + exemplos; erros seguem por linha; `errosTotal`/`cadastrosFaltandoTotal` comunicam o corte |
+| Município **sem UF** não sinalizado (MEDIA) | Caso mais comum de `localidade_id` NULL — planilha só com "Cidade" |
+| Nº de linha errado com separadores em branco (MEDIA) | O índice era do array **já filtrado**; preservado antes do filtro |
+| `cadastrosFaltando` sem cap (BAIXA) | `slice(0, 50)` + scroll + "…e mais N" |
+
+Outros 6 achados foram **refutados** (pré-existentes ou atribuição incorreta a esta mudança).
+
+### Verificação
+`npm run check` limpo · **`npm test` 327 passou, 0 falhou** (Importação 29→52) · `npm run build` OK.
+Além disso, contra o **banco de dev**:
+- Obra sem custo real inserida em `BEGIN/ROLLBACK` → o `CAND` **devolve** a obra, alias
+  `"custoRealTotal" = 900000` (o orçado), `custoM2 = 1800 R$/m²`, e **não** entra na aderência.
+  Veredito automatizado no probe: *"aviso contradiz o CAND? NÃO ✅"*.
+- Nº de linha provado com `.xlsx` real com separadores: erro na **linha 5** era relatado como
+  "Linha 3"; agora acerta.
+- As 4 formas de resposta exercitadas no navegador, **inclusive a resposta antiga** sem os campos
+  novos (degrada sem quebrar).
+
+### Achado de passagem — **não corrigido**, registrado
+`mapear.js` → `data('06/2023')` devolve a string **`"undefined-06-01"`**: a regex `MM/YYYY` tem 2
+grupos e o código usa `m[3]`. É **pré-existente** (refutado como defeito desta mudança, 2/3), mas é
+real e sério — o valor é *truthy*, passa na validação, e estoura `22007 invalid input syntax for
+type date` no INSERT do `/confirmar`, deixando importação **parcialmente** gravada. Atinge qualquer
+planilha com data-base em `MM/AAAA`, formato que os próprios sinônimos (`mesbase`/`database`)
+convidam — ou seja, é bem provável na carga real do `DADOS.md`.
+
+### Estado
+Backlog de código do MVP **zerado** (RF-C01/C02 era o último). Sobram: o bug do `MM/AAAA` acima, o
+`custo_provavel` NULL com escore 0 (registrado antes) e o item B do handoff (documentado em
+`docs/05` §3.3 por decisão do usuário). O maior valor agora é **dado** — runbook em `DADOS.md`.
+
+### Para o Cowork
+> RF-C01/C02 fechado, e a lição do dia repete a da manhã: **avisos são afirmações e precisam ser
+> verificados contra o código que descrevem**. Escrevi 5 avisos por dedução e 3 estavam factualmente
+> errados — o pior deles dizia que uma obra sem custo real ficaria de fora da paramétrica quando o
+> `COALESCE` do `CAND` faz ela **entrar com o orçado no lugar do realizado**. Se vocês forem mexer
+> em texto que promete consequência ao usuário, vale o mesmo ritual: abrir a query e conferir.
+> **Prioridade sugerida para vocês:** o bug do `data('MM/AAAA')` → `"undefined-06-01"`, que quebra
+> importação no meio e é provável na carga real que está para acontecer.

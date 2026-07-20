@@ -1227,7 +1227,13 @@ app.post('/api/importacao/analisar', express.raw({ type: '*/*', limit: '25mb' })
   const matriz = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: null })
   if (!matriz.length) return res.status(400).json({ error: 'Planilha sem dados.' })
   const headers = (matriz[0] || []).map((h) => (h == null ? '' : String(h)))
-  const linhas = matriz.slice(1).filter((r) => Array.isArray(r) && r.some((c) => c != null && c !== ''))
+  // Guarda o nº da linha ANTES de filtrar as vazias: o relatório manda o usuário abrir a planilha
+  // e ir até a linha N, então o número precisa ser o do Excel (1 = cabeçalho). Com separadores em
+  // branco no meio — comuns em planilha de obra — o índice do array filtrado já não corresponde.
+  const numeradas = matriz.slice(1)
+    .map((r, i) => ({ r, nLinha: i + 2 }))
+    .filter(({ r }) => Array.isArray(r) && r.some((c) => c != null && c !== ''))
+  const linhas = numeradas.map((x) => x.r)
   const mapa = mapearCabecalho(headers)
   const montadas = linhas.map((r) => montarLinha(r, mapa))
   // RF-C04 — sinaliza quais códigos já existem no acervo (reimportação idempotente por chave):
@@ -1236,9 +1242,82 @@ app.post('/api/importacao/analisar', express.raw({ type: '*/*', limit: '25mb' })
   const existentes = codigos.length
     ? new Set((await q('SELECT codigo FROM orcamento.obras WHERE codigo = ANY($1::text[])', [codigos])).map((r) => r.codigo))
     : new Set()
-  const previa = montadas.slice(0, 10).map((l) => ({ ...l, existe: !!l.codigo && existentes.has(l.codigo) }))
+
+  // RF-C02 — a validação acontece AQUI, na prévia, e não só no confirmar: quem manda gravar
+  // precisa saber antes o que será rejeitado e o que entrará capenga. Valida TODAS as linhas
+  // (a prévia mostra 10, mas o erro pode estar na linha 500).
+  //
+  // Cadastros não encontrados só dá para checar aqui, com banco: o confirmar resolve
+  // tipo/padrão/localidade por nome e grava NULL silenciosamente quando não acha — a obra entra
+  // sem tipo e nunca mais aparece como análoga de nada.
+  const chaveLoc = (l) => `${(l.municipio || '').toLowerCase()}|${l.uf || ''}`
+  const [tiposRows, padroesRows, locRows] = await Promise.all([
+    q('SELECT lower(nome) AS n FROM orcamento.tipos_obra'),
+    q('SELECT lower(nome) AS n FROM orcamento.padroes_acabamento'),
+    q('SELECT lower(municipio) AS m, uf FROM orcamento.localidades'),
+  ])
+  const tiposSet = new Set(tiposRows.map((r) => r.n))
+  const padroesSet = new Set(padroesRows.map((r) => r.n))
+  const locSet = new Set(locRows.map((r) => `${r.m}|${r.uf}`))
+
+  // Cadastro faltando é condição GLOBAL, não da linha: se a planilha inteira usa um tipo que não
+  // está no catálogo, repetir o aviso em cada linha produz 500 mensagens idênticas que soterram os
+  // problemas reais (um custo digitado errado, por exemplo). Agrega por valor, com a contagem.
+  const faltando = new Map() // "campo|valor" → { campo, valor, linhas }
+  const marcarFalta = (campo, valor) => {
+    const k = `${campo}|${valor}`
+    const at = faltando.get(k)
+    if (at) at.linhas++
+    else faltando.set(k, { campo, valor, linhas: 1 })
+  }
+
+  const avaliadas = montadas.map((l, i) => {
+    const v = validarLinha(l)
+    if (l.tipoNome && !tiposSet.has(l.tipoNome.toLowerCase())) marcarFalta('tipo de obra', l.tipoNome)
+    if (l.padraoNome && !padroesSet.has(l.padraoNome.toLowerCase())) marcarFalta('padrão', l.padraoNome)
+    // Município sem UF é o caso mais comum de localidade perdida: a planilha traz só "Cidade" e
+    // o /confirmar exige os dois para resolver o id — sem esta guarda, a obra entra com
+    // localidade NULL e a prévia relata "0 avisos", parecendo perfeita.
+    if (l.municipio && !l.uf) marcarFalta('localidade (sem UF na planilha)', l.municipio)
+    else if (l.municipio && l.uf && !locSet.has(chaveLoc(l))) marcarFalta('localidade', `${l.municipio}/${l.uf}`)
+    return { linha: numeradas[i].nLinha, ok: v.ok, erros: v.erros, avisos: v.avisos }
+  })
+
+  const comErro = avaliadas.filter((a) => !a.ok)
+  const comAviso = avaliadas.filter((a) => a.ok && a.avisos.length)
+  const cadastrosFaltando = [...faltando.values()].sort((a, b) => b.linhas - a.linhas).slice(0, 50)
+
+  // Avisos agregados por TEXTO, pelo mesmo motivo dos cadastros: numa planilha real, um aviso
+  // estrutural (ex.: "sem custo real") repete em centenas de linhas e afogaria o aviso raro e
+  // acionável (ex.: um custo digitado 1000× maior na linha 480). Uma lista por linha cortada em
+  // 100 preservaria as repetições do começo e descartaria justamente o achado que importa.
+  const porAviso = new Map()
+  for (const a of avaliadas) {
+    for (const texto of a.avisos) {
+      const at = porAviso.get(texto)
+      if (at) { at.linhas++; if (at.exemplos.length < 5) at.exemplos.push(a.linha) }
+      else porAviso.set(texto, { aviso: texto, linhas: 1, exemplos: [a.linha] })
+    }
+  }
+  const avisos = [...porAviso.values()].sort((a, b) => b.linhas - a.linhas)
+  const previa = montadas.slice(0, 10).map((l, i) => ({
+    ...l, existe: !!l.codigo && existentes.has(l.codigo),
+    erros: avaliadas[i].erros, avisos: avaliadas[i].avisos,
+  }))
   const jaExistem = montadas.filter((l) => l.codigo && existentes.has(l.codigo)).length
-  res.json({ headers, mapa, totalLinhas: linhas.length, previa, linhas, jaExistem })
+  res.json({
+    headers, mapa, totalLinhas: linhas.length, previa, linhas, jaExistem,
+    // Erros primeiro: se a lista for truncada, o que bloqueia é mais urgente que o que só avisa.
+    resumo: { validas: avaliadas.length - comErro.length, comErro: comErro.length, comAviso: comAviso.length },
+    // Erros ficam por linha (o usuário precisa ir até ela); avisos vão agregados por texto.
+    // errosTotal/cadastrosFaltandoTotal existem para a tela poder dizer o que foi cortado —
+    // truncar em silêncio faria o relatório parecer completo quando não é.
+    problemas: comErro.slice(0, 100),
+    errosTotal: comErro.length,
+    avisos,
+    cadastrosFaltando,
+    cadastrosFaltandoTotal: faltando.size,
+  })
 }))
 
 // RF-C04 — importação idempotente por chave (obras.codigo): reimportar a mesma obra
