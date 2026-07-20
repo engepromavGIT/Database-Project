@@ -1433,3 +1433,96 @@ e os 2 checks de credencial rodaram na máquina do usuário — **nenhuma senha 
 > da API"** e o aviso de que `VITE_API_URL` só entra em vigor com *clear build cache*. A `backup`
 > segue viva como rollback. **A frente de infra está fechada; o caminho está livre para features
 > (RF-F04/F05/C01/C02) e para os dados reais de índice.**
+
+---
+
+## Atualização 2026-07-20 — RF-F04 (confiança do bottom-up) + RF-F05 (faixa O–P de prazo)
+
+Primeira frente de código depois da produção no ar. Ambos os RFs eram "pequenos" no papel; o F04
+escondia uma decisão de projeto que valia mais que o código.
+
+### RF-F04 — o bottom-up passa a gravar `nivel_confianca_pct`
+Antes só a paramétrica calculava confiança; o bottom-up gravava NULL e a UI escondia o bloco.
+
+**A decisão:** *não* reusar `nivelConfianca({n, coefVar, simMedia})`. A fórmula dela é um produto de
+três penalidades `(0,5 + 0,5·x)`, e o bottom-up não tem similaridade — o encaixe "óbvio" seria passar
+`simMedia = 1`, o que **aposenta um terço do poder de punição**. Medido no código real:
+
+| Caso | Reuso com `simMedia=1` | `confiancaBottomUp` |
+|---|---|---|
+| n=8, aderência dispersa (CV 0,5) | **75% → "Alta"** | **30% → "Baixa"** |
+| n=20, CV 2,0 (realizado = 3× o orçado) | **50% → "Média"** | **10% → "Baixa"** |
+| n=12 perfeita, mas misturando tipos de obra | 89% "Alta" | **65% "Média"** |
+| n=0 (o acervo de hoje) | 0% (parece bug) | 30% "Baixa" |
+
+Com `simMedia=1` **a dispersão sozinha nunca derruba abaixo de 50%** — um histórico com 200% de
+variação ainda leria "Média". Daí `confiancaBottomUp({n, fator, desvio, tipoFiltrado})`, função nova
+e pura, na forma **base + ganho** em vez de produto que zera: n=0 não é "sem estimativa" (como na
+paramétrica, que devolve 400), é "estimativa real, não calibrada". Constantes `BU_*` explícitas
+(RNF-15). Propriedades travadas em teste: monotônica em n, "Alta" inalcançável abaixo de 4 obras,
+piso para aderência degenerada (otimista em R$ 0), entrada suja cai na base sem lançar.
+
+### RF-F05 — a faixa O–P de prazo aparece
+As três colunas já existiam e já eram gravadas; quase nenhuma superfície as exibia. Passaram a
+mostrar: card de resultado, comparação de versões, **PDF** (três linhas, espelhando o custo) e
+**`GET /api/integracao/estimativas/:id`** — a API que alimenta o processo comercial, que devolvia
+`custoReferencia` em faixa e o prazo como número único. `prazoProvavelDias` foi **mantido** no corpo:
+consumidor externo, acrescentar campo é retrocompatível, remover não é.
+
+Deliberadamente **fora**: a lista "Estimativas salvas" e `GET /api/estimativas`. A tabela não mostra
+faixa de custo nenhuma — acrescentar só a de prazo criaria a assimetria inversa. Endpoint só ganha
+campo quando uma superfície o consome.
+
+### O que o painel de projeto achou e eu não tinha visto
+- **O caso parcial estava invertido.** Eu supunha "M existe, O/P nulos" — é *impossível*. O real é o
+  oposto: `escoreSimilaridade` pode devolver **0**; se todas as análogas derem 0, `mediaPonderada`
+  retorna null (den=0) e o provável some, mas `percentil` ignora o peso e **O/P sobrevivem**. Como
+  toda superfície lia só `prazo_provavel_dias`, uma faixa legítima de 53–77 dias aparecia como "—".
+- **O mesmo furo atinge o custo** (`custo_provavel` NULL com O/P preenchidos) → é defeito separado,
+  **registrado como tarefa à parte**, não corrigido aqui.
+- **A tela já mentia:** `×1 (±0.1)` com acervo zerado exibia os *defaults* do `estatisticaAderencia`
+  como se fossem medição — uma linha ao lado do que o F04 veio corrigir.
+
+### O que a revisão adversarial pegou (5 lentes → 3 céticos por achado)
+**1 ALTA confirmada, no código que eu escrevi para corrigir esse exato pecado.** O `aderenciaTexto`
+guardava em `n > 0`, mas `estatisticaAderencia` só **mede** o desvio a partir de `n >= 2`: com uma
+obra, o `±0,1` é a **mesma constante do acervo vazio**. O texto imprimia `×1.15 (±0.1) · 1 obra` —
+e o sufixo "· 1 obra", que eu havia acrescentado, transformava um número ambíguo na **afirmação de
+que aquela obra sustenta os ±10%**. Pior, era incoerente comigo mesmo no mesmo card: a confiança
+devolvia "Baixa (30%)" *precisamente porque* o desvio é default. E não era hipótese — com 0 obras
+hoje, **n=1 é o próximo estado garantido da produção**.
+
+**Correção na raiz:** quem fabrica o default passou a denunciá-lo. `estatisticaAderencia` devolve
+`desvioMedido`, que viaja na resposta até a tela — o limiar deixou de viver em três lugares.
+`AD_N_DESVIO` (2, "o desvio é medido?") e `BU_N_DISP` (3, "a dispersão sustenta confiança?") são
+perguntas diferentes e estão documentadas como tais. E `aderenciaTexto` saiu do JSX para o
+`format.js`: o defeito estava em lógica de apresentação **sem teste**.
+
+Outros 2 achados foram **refutados 3/3** — culpavam esta mudança por comportamento pré-existente.
+
+### Verificação
+`npm run check` limpo (16 arquivos) · **`npm test` 296 passou, 0 falhou** (eram 240; Bottom-up 10→34,
+**`tests/format.test.mjs` novo com 32**) · `npm run build` OK. Além disso: INSERT do bottom-up
+validado **contra o banco de dev em transação com ROLLBACK** (18 colunas ↔ 18 valores ↔ 17
+parâmetros, confiança na coluna certa) e `format.js` exercitado **no navegador**, via dev server.
+
+Achado de brinde nessa checagem: `nivel_confianca_pct` é `numeric(5,2)` e **o pg devolve `"85.00"`
+como string** — o card (número fresco) mostrava `85%` e a lista (lido do banco) `85.00%`. Uniformizado
+com o `pct()` que já existia, em tela, cenários e PDF, antes que o F04 espalhasse isso por mais
+superfícies.
+
+### Estado
+Backlog de código reduzido a **RF-C01/C02** (validação na prévia de importação + PDF na web). O maior
+valor agora é **dado**: colar as séries reais SINAPI/INCC (o importador em lote está pronto) e
+carregar mais orçamentos — cada obra encerrada melhora a estimativa de quem já usa o módulo no ar.
+
+### Para o Cowork
+> Handoff de vocês conferido e commitado — verifiquei por conta própria antes (296/296, check e build
+> limpos), e uma correção ao handoff: `.claude/launch.json` **não** estava modificado, não havia o que
+> descartar. Os `_rprobe*.mjs` eram rascunhos dos meus próprios agentes de revisão e foram removidos.
+> O que vale registrar: a revisão adversarial pegou **1 ALTA no código escrito para corrigir esse
+> mesmo tipo de defeito** — o texto de aderência creditava a 1 obra um desvio que é constante
+> hardcoded. A lição que ficou no código é que **quem fabrica um default é quem tem de expor isso**
+> (`desvioMedido`), em vez de cada tela reimplementar o limiar. Vale a pena olhar se há outros lugares
+> onde um default de `estatisticaAderencia`/`estimarBottomUp` chega à tela sem ressalva — a largura da
+> faixa O–P do bottom-up com n=1, por exemplo, é inteiramente derivada do `desvio = 0,1` assumido.

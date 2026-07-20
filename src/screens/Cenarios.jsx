@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, num } from '../data/format.js'
+import { brl, pct, prazoDias, faixaPrazo } from '../data/format.js'
 
 async function abrirPdf(id) {
   const blob = await api.estimativaPdf(id)
@@ -25,9 +25,11 @@ export function Cenarios() {
   const linhas = [
     ['Método', (v) => v.metodo],
     ['Custo provável', (v) => brl(v.custoProvavel)],
-    ['Faixa (O–P)', (v) => `${brl(v.custoOtimista)} — ${brl(v.custoPessimista)}`],
-    ['Prazo provável', (v) => (v.prazoProvavelDias != null ? `${num(v.prazoProvavelDias)} dias` : '—')],
-    ['Confiança', (v) => (v.nivelConfianca != null ? `${v.nivelConfianca}%` : '—')],
+    ['Faixa de custo (O–P)', (v) => `${brl(v.custoOtimista)} — ${brl(v.custoPessimista)}`],
+    ['Prazo provável', (v) => prazoDias(v.prazoProvavelDias)],
+    // RF-F05 — faixa de prazo, simétrica à de custo.
+    ['Faixa de prazo (O–P)', (v) => faixaPrazo(v.prazoOtimistaDias, v.prazoPessimistaDias)],
+    ['Confiança', (v) => pct(v.nivelConfianca)],
     ['Criada em', (v) => v.criadoEm],
     ['Erro (realizado)', (v) => (v.erroPct != null ? `${v.erroPct > 0 ? '+' : ''}${v.erroPct}%` : '—')],
     ['PDF', (v) => <button className="btn btn-ghost btn-sm" onClick={() => abrirPdf(v.id)}>Abrir</button>],
