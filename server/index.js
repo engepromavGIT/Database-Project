@@ -1345,44 +1345,68 @@ app.post('/api/importacao/confirmar', wrap(async (req, res) => {
   const { linhas, mapa, modo } = req.body || {}
   if (!Array.isArray(linhas) || !linhas.length || !mapa) return res.status(400).json({ error: 'Nada para importar.' })
   const atualizar = modo !== 'pular' // default: atualiza existentes (idempotente)
-  let inseridas = 0, atualizadas = 0, puladas = 0
-  const erros = []
-  for (let idx = 0; idx < linhas.length; idx++) {
-    const l = montarLinha(linhas[idx], mapa)
-    const v = validarLinha(l)
-    if (!v.ok) { erros.push({ linha: idx + 2, erros: v.erros }); continue }
-    const tipoId = l.tipoNome ? (await q('SELECT id FROM orcamento.tipos_obra WHERE lower(nome) = lower($1)', [l.tipoNome]))[0]?.id || null : null
-    const padraoId = l.padraoNome ? (await q('SELECT id FROM orcamento.padroes_acabamento WHERE lower(nome) = lower($1)', [l.padraoNome]))[0]?.id || null : null
-    let localidadeId = null
-    if (l.municipio && l.uf) {
-      localidadeId = (await q('SELECT id FROM orcamento.localidades WHERE lower(municipio) = lower($1) AND uf = $2', [l.municipio, l.uf]))[0]?.id || null
+
+  // Toda a carga numa ÚNICA transação. Antes o laço fazia INSERT/UPDATE um a um em autocommit:
+  // uma linha que ESTOURA no meio (ex.: custo fora da faixa → 22003, ou uma data inválida que
+  // escapasse do saneamento de mapear.js → 22007/22008) deixava as obras anteriores JÁ gravadas e
+  // as seguintes não — a planilha entrava pela metade e o usuário via um 500 genérico, sem saber
+  // até onde a carga chegou. Agora qualquer falha inesperada faz ROLLBACK do lote inteiro; como a
+  // reimportação é idempotente por `codigo` (RF-C04), o usuário conserta a planilha e reenvia sem
+  // duplicar nem catar quais linhas sobraram.
+  //
+  // O que o rollback NÃO abrange, DE PROPÓSITO: linha com ERRO DE VALIDAÇÃO. Ela é pulada-e-
+  // reportada (não estoura), porque é resultado esperado e a tela é construída em cima dele — o
+  // botão confirmar habilita com `validas > 0` e o resultado mostra "X inseridas · N com erro".
+  // Transformar erro de validação em rollback total contradiria essa UX (o usuário veria 0 gravado
+  // com o botão habilitado). O tudo-ou-nada é para a FALHA inesperada, não para o erro previsto.
+  const resultado = await tx(async (client) => {
+    const cq = (text, params) => client.query(text, params).then((r) => r.rows)
+    let inseridas = 0, atualizadas = 0, puladas = 0
+    const erros = []
+    for (let idx = 0; idx < linhas.length; idx++) {
+      const l = montarLinha(linhas[idx], mapa)
+      const v = validarLinha(l)
+      if (!v.ok) { erros.push({ linha: idx + 2, erros: v.erros }); continue }
+      const tipoId = l.tipoNome ? (await cq('SELECT id FROM orcamento.tipos_obra WHERE lower(nome) = lower($1)', [l.tipoNome]))[0]?.id || null : null
+      const padraoId = l.padraoNome ? (await cq('SELECT id FROM orcamento.padroes_acabamento WHERE lower(nome) = lower($1)', [l.padraoNome]))[0]?.id || null : null
+      let localidadeId = null
+      if (l.municipio && l.uf) {
+        localidadeId = (await cq('SELECT id FROM orcamento.localidades WHERE lower(municipio) = lower($1) AND uf = $2', [l.municipio, l.uf]))[0]?.id || null
+      }
+      const [existente] = await cq('SELECT id FROM orcamento.obras WHERE codigo = $1', [l.codigo])
+      if (existente) {
+        if (!atualizar) { puladas++; continue }
+        await cq(
+          `UPDATE orcamento.obras SET
+             nome=$2, tipo_obra_id=$3, padrao_id=$4, localidade_id=$5, area_construida_m2=$6,
+             custo_real_total=$7, custo_orcado_total=$8, dt_inicio_real=$9, dt_fim_real=$10,
+             data_base_custo=$11, elegivel_referencia=$12, fonte_dado='importado', updated_at=now()
+           WHERE id=$1`,
+          [existente.id, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
+            l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel])
+        atualizadas++
+      } else {
+        await cq(
+          `INSERT INTO orcamento.obras
+             (id, codigo, nome, tipo_obra_id, padrao_id, localidade_id, area_construida_m2, custo_real_total, custo_orcado_total,
+              dt_inicio_real, dt_fim_real, data_base_custo, status, elegivel_referencia, fonte_dado, criado_por)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'concluida',$13,'importado',$14)`,
+          [genId('obra'), l.codigo, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
+            l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel, req.userId],
+        )
+        inseridas++
+      }
     }
-    const [existente] = await q('SELECT id FROM orcamento.obras WHERE codigo = $1', [l.codigo])
-    if (existente) {
-      if (!atualizar) { puladas++; continue }
-      await q(
-        `UPDATE orcamento.obras SET
-           nome=$2, tipo_obra_id=$3, padrao_id=$4, localidade_id=$5, area_construida_m2=$6,
-           custo_real_total=$7, custo_orcado_total=$8, dt_inicio_real=$9, dt_fim_real=$10,
-           data_base_custo=$11, elegivel_referencia=$12, fonte_dado='importado', updated_at=now()
-         WHERE id=$1`,
-        [existente.id, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
-          l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel])
-      atualizadas++
-    } else {
-      await q(
-        `INSERT INTO orcamento.obras
-           (id, codigo, nome, tipo_obra_id, padrao_id, localidade_id, area_construida_m2, custo_real_total, custo_orcado_total,
-            dt_inicio_real, dt_fim_real, data_base_custo, status, elegivel_referencia, fonte_dado, criado_por)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'concluida',$13,'importado',$14)`,
-        [genId('obra'), l.codigo, l.nome, tipoId, padraoId, localidadeId, l.areaConstruidaM2, l.custoRealTotal, l.custoOrcadoTotal,
-          l.dtInicioReal, l.dtFimReal, l.dataBaseCusto, l.elegivel, req.userId],
-      )
-      inseridas++
-    }
+    return { inseridas, atualizadas, puladas, erros }
+  })
+
+  // Fora da transação: a auditoria usa o pool próprio, é best-effort (não derruba a operação) e só
+  // deve registrar uma carga que COMMITOU. Se o tx acima estourou, o rollback já aconteceu, este
+  // trecho não roda e nada é logado — coerente com "nada foi gravado".
+  if (resultado.inseridas + resultado.atualizadas > 0) {
+    await registrarLog(req, resultado.atualizadas > 0 ? 'update' : 'create', 'importacao', null)
   }
-  if (inseridas + atualizadas > 0) await registrarLog(req, atualizadas > 0 ? 'update' : 'create', 'importacao', null)
-  res.json({ inseridas, atualizadas, puladas, total: linhas.length, erros })
+  res.json({ ...resultado, total: linhas.length })
 }))
 
 // Detalhamento de obra (EAP, itens, realizados, curva ABC) — RF-B02..B04, RF-D04.
