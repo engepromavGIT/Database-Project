@@ -1,0 +1,44 @@
+# CI do módulo Base de Projetos.
+# Roda o mesmo pipeline do build-check-log.md (check → test → build) em cada PR para a main
+# e em cada push na main. NÃO toca banco: os testes são de funções puras e o build do Vite
+# não precisa de DATABASE_URL nem de segredos (VITE_API_URL fica vazia, como em dev).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancela execuções antigas do mesmo PR/branch quando chega um push novo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verificacao:
+    name: check · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # `npm ci` respeita o package-lock.json. A dependência `xlsx` vem de uma URL do
+      # CDN da SheetJS (não do registry) — o runner tem internet, então instala normal.
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Sintaxe (node --check)
+        run: npm run check
+
+      - name: Testes (funções puras)
+        run: npm test
+
+      - name: Build (Vite)
+        run: npm run build
