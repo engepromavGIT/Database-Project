@@ -1,7 +1,9 @@
 # CI do módulo Base de Projetos.
-# Roda o mesmo pipeline do build-check-log.md (check → test → build) em cada PR para a main
-# e em cada push na main. NÃO toca banco: os testes são de funções puras e o build do Vite
-# não precisa de DATABASE_URL nem de segredos (VITE_API_URL fica vazia, como em dev).
+# Dois jobs em cada PR para a main e em cada push na main:
+#   - verificacao: check → test (Node) → build, o pipeline do build-check-log.md;
+#   - testes-python: pytest das funções puras do ETL (scripts/).
+# NÃO toca banco: os testes Node incluem endpoints, mas com o banco mockado (seam __setQueryImpl);
+# o build do Vite não precisa de DATABASE_URL nem de segredos; o pytest do ETL não abre conexão.
 name: CI
 
 on:
@@ -37,8 +39,31 @@ jobs:
       - name: Sintaxe (node --check)
         run: npm run check
 
-      - name: Testes (funções puras)
+      - name: Testes (Node — funções puras + endpoints com banco mockado)
         run: npm test
 
       - name: Build (Vite)
         run: npm run build
+
+  testes-python:
+    name: pytest (ETL)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-dev.txt
+
+      # requirements-dev.txt puxa requirements.txt (pdfplumber + psycopg2-binary) e o pytest.
+      - name: Instalar dependências (ETL + pytest)
+        run: pip install -r scripts/requirements-dev.txt
+
+      - name: pytest (funções puras do ETL, sem banco)
+        run: python -m pytest scripts/tests -q
