@@ -5,6 +5,7 @@
 // em nenhuma tabela do app existente.
 // ============================================================
 import 'dotenv/config'
+import { pathToFileURL } from 'url'
 import express from 'express'
 import cors from 'cors'
 import * as XLSX from 'xlsx'
@@ -21,7 +22,10 @@ import { parseSerieIndices } from './importacao/indices.js'
 import { conciliarLista } from './importacao/conciliar.js'
 import { registrarObraDetalhe, ANEXO_UPLOAD_MAX_MB } from './obraDetalhe.js'
 
-const app = express()
+// `app` é exportado para os testes de endpoint (tests/estimativa.http.test.mjs), que sobem
+// o Express num porta efêmera. O listener real só sobe quando este arquivo é o entrypoint
+// (ver o guard isMain no final) — importar o módulo NÃO conecta ao banco nem abre porta.
+export const app = express()
 
 const origins = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim()).filter(Boolean)
 app.use(cors({ origin: origins.includes('*') ? true : origins }))
@@ -1410,13 +1414,19 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: err.message })
 })
 
-q('SELECT 1 FROM orcamento.obras LIMIT 1')
-  .catch(() => console.warn('[base-projetos] schema "orcamento" não encontrado — rode db/migrations/001..004 na sua branch do Neon.'))
-  .finally(() => {
-    // Auditoria é best-effort (não derruba operação), então uma tabela ausente passaria
-    // silenciosa. Avisar cedo se a trilha (RF-H05) não puder ser gravada nesta branch.
-    q("SELECT to_regclass('orcamento.log_auditoria') AS t")
-      .then(([r]) => { if (!r || !r.t) console.warn('[base-projetos] AVISO: orcamento.log_auditoria ausente — a trilha de auditoria NÃO será gravada (rode as migrations).') })
-      .catch(() => {})
-    app.listen(PORT, () => console.log(`[base-projetos] API em http://localhost:${PORT}`))
-  })
+// Startup só quando executado como entrypoint (`node server/index.js`). Ao ser IMPORTADO
+// — por um teste de endpoint — não conecta ao banco nem abre a porta; o teste controla o
+// ciclo de vida do servidor. Comparo URLs (não caminhos) para evitar barra/contrabarra no Windows.
+const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href
+if (isMain) {
+  q('SELECT 1 FROM orcamento.obras LIMIT 1')
+    .catch(() => console.warn('[base-projetos] schema "orcamento" não encontrado — rode db/migrations/001..004 na sua branch do Neon.'))
+    .finally(() => {
+      // Auditoria é best-effort (não derruba operação), então uma tabela ausente passaria
+      // silenciosa. Avisar cedo se a trilha (RF-H05) não puder ser gravada nesta branch.
+      q("SELECT to_regclass('orcamento.log_auditoria') AS t")
+        .then(([r]) => { if (!r || !r.t) console.warn('[base-projetos] AVISO: orcamento.log_auditoria ausente — a trilha de auditoria NÃO será gravada (rode as migrations).') })
+        .catch(() => {})
+      app.listen(PORT, () => console.log(`[base-projetos] API em http://localhost:${PORT}`))
+    })
+}
