@@ -14,7 +14,7 @@ import { fatorAtualizacao, atualizarValor, chaveMes, custoM2, ajusteRegional } f
 import { escoreSimilaridade } from './estimativa/similaridade.js'
 import {
   estimarParametrico, estimarPrazo, estimarPrazoDireto, estimarBottomUp, estatisticaAderencia,
-  coefVariacao, nivelConfianca, rotuloConfianca,
+  coefVariacao, nivelConfianca, confiancaBottomUp, rotuloConfianca,
 } from './estimativa/metodos.js'
 import { mapearCabecalho, montarLinha, validarLinha } from './importacao/mapear.js'
 import { parseSerieIndices } from './importacao/indices.js'
@@ -224,13 +224,17 @@ app.get('/api/integracao/estimativas/:id', requireApiKey, wrap(async (req, res) 
   const [e] = await q(`
     SELECT id, descricao, metodo, to_char(data_base, 'YYYY-MM-DD') AS "dataBase", area_alvo_m2 AS "areaAlvoM2",
            custo_otimista AS "custoOtimista", custo_provavel AS "custoProvavel", custo_pessimista AS "custoPessimista",
-           prazo_provavel_dias AS "prazoProvavelDias", nivel_confianca_pct AS "nivelConfianca",
+           prazo_otimista_dias AS "prazoOtimistaDias", prazo_provavel_dias AS "prazoProvavelDias",
+           prazo_pessimista_dias AS "prazoPessimistaDias", nivel_confianca_pct AS "nivelConfianca",
            to_char(criado_em, 'YYYY-MM-DD') AS "geradoEm"
     FROM orcamento.estimativas WHERE id = $1`, [req.params.id])
   if (!e) return res.status(404).json({ error: 'Estimativa não encontrada.' })
   res.json({
     id: e.id, descricao: e.descricao, metodo: e.metodo, dataBase: e.dataBase, areaAlvoM2: e.areaAlvoM2,
     custoReferencia: { otimista: e.custoOtimista, provavel: e.custoProvavel, pessimista: e.custoPessimista },
+    // RF-F05 — o prazo também sai em faixa, como o custo. prazoProvavelDias segue no corpo:
+    // este consumidor é externo (API key), acrescentar campo é retrocompatível, remover não é.
+    prazoReferencia: { otimista: e.prazoOtimistaDias, provavel: e.prazoProvavelDias, pessimista: e.prazoPessimistaDias },
     prazoProvavelDias: e.prazoProvavelDias, nivelConfianca: e.nivelConfianca, geradoEm: e.geradoEm,
     observacao: 'Custo de referência (sem BDI). O preço final é responsabilidade do processo comercial.',
   })
@@ -993,17 +997,22 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     const ad = await aderenciaHistorica(alvo.tipoObraId)
     const bu = estimarBottomUp(custoDireto, ad.fator, ad.desvio)
     const prazo = await prazoHistorico(alvo.tipoObraId, alvo.areaAlvoM2)
+    // RF-F04 — o bottom-up também grava confiança. tipoFiltrado diz se a aderência veio do tipo
+    // do alvo ou de todos os tipos misturados (aderenciaHistorica só filtra quando há tipoObraId).
+    const conf = confiancaBottomUp({ n: ad.n, fator: ad.fator, desvio: ad.desvio, tipoFiltrado: Boolean(alvo.tipoObraId) })
 
     const id = genId('est')
     await q(
       `INSERT INTO orcamento.estimativas
          (id, descricao, tipo_obra_id, padrao_id, localidade_id, area_alvo_m2, data_base, metodo,
           custo_otimista, custo_provavel, custo_pessimista,
-          prazo_otimista_dias, prazo_provavel_dias, prazo_pessimista_dias, grupo, versao, criado_por)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'bottom_up',$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          prazo_otimista_dias, prazo_provavel_dias, prazo_pessimista_dias,
+          nivel_confianca_pct, grupo, versao, criado_por)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'bottom_up',$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
       [id, descricao, alvo.tipoObraId, alvo.padraoId, alvo.localidadeId, alvo.areaAlvoM2, dataBaseDate(alvo.dataBase),
         round2(bu.O), round2(bu.esperado), round2(bu.P),
-        roundInt(prazo.O), roundInt(prazo.esperado), roundInt(prazo.P), grupo, versao, req.userId],
+        roundInt(prazo.O), roundInt(prazo.esperado), roundInt(prazo.P),
+        conf, grupo, versao, req.userId],
     )
     for (const it of itens) {
       await q(
@@ -1017,9 +1026,15 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     return res.status(201).json({
       id, descricao, metodo: 'bottom_up', alvo, grupo, versao,
       custoDireto: round2(custoDireto),
-      aderencia: { fator: round2(ad.fator), desvio: round2(ad.desvio), n: ad.n },
+      aderencia: {
+        fator: round2(ad.fator), desvio: round2(ad.desvio), n: ad.n,
+        // desvioMedido: com 1 obra o fator é medido mas o desvio é o default 0,1. A tela precisa
+        // distinguir os dois — imprimi-los juntos afirmaria que o ±10% foi observado.
+        desvioMedido: ad.desvioMedido, tipoFiltrado: Boolean(alvo.tipoObraId),
+      },
       custo: { O: round2(bu.O), M: round2(bu.M), P: round2(bu.P), esperado: round2(bu.esperado) },
       prazo: { O: roundInt(prazo.O), M: roundInt(prazo.M), P: roundInt(prazo.P), esperado: roundInt(prazo.esperado) },
+      nivelConfianca: conf, rotulo: rotuloConfianca(conf),
       bdiPct: Number(bdiPct) || 0, bdiFonte, preco, itens,
     })
   }
@@ -1102,7 +1117,8 @@ app.get('/api/cenarios/:grupo', wrap(async (req, res) => {
   res.json(await q(`
     SELECT id, versao, descricao, metodo, area_alvo_m2 AS "areaAlvoM2",
            custo_otimista AS "custoOtimista", custo_provavel AS "custoProvavel", custo_pessimista AS "custoPessimista",
-           prazo_provavel_dias AS "prazoProvavelDias", nivel_confianca_pct AS "nivelConfianca",
+           prazo_otimista_dias AS "prazoOtimistaDias", prazo_provavel_dias AS "prazoProvavelDias",
+           prazo_pessimista_dias AS "prazoPessimistaDias", nivel_confianca_pct AS "nivelConfianca",
            to_char(criado_em, 'YYYY-MM-DD') AS "criadoEm", custo_realizado AS "custoRealizado", erro_pct AS "erroPct"
     FROM orcamento.estimativas WHERE grupo = $1 ORDER BY versao`, [req.params.grupo]))
 }))
@@ -1131,7 +1147,8 @@ app.get('/api/estimativas/:id/pdf', wrap(async (req, res) => {
   const [est] = await q(`
     SELECT id, descricao, metodo, versao, area_alvo_m2 AS "areaAlvoM2", to_char(data_base, 'YYYY-MM-DD') AS "dataBase",
            custo_otimista AS o, custo_provavel AS m, custo_pessimista AS p,
-           prazo_provavel_dias AS prazo, nivel_confianca_pct AS conf
+           prazo_otimista_dias AS "prazoO", prazo_provavel_dias AS prazo, prazo_pessimista_dias AS "prazoP",
+           nivel_confianca_pct AS conf
     FROM orcamento.estimativas WHERE id = $1`, [req.params.id])
   if (!est) return res.status(404).json({ error: 'Estimativa não encontrada.' })
   const refs = await q('SELECT o.codigo, o.nome, r.peso_similaridade AS peso FROM orcamento.estimativa_referencias r JOIN orcamento.obras o ON o.id = r.obra_id WHERE r.estimativa_id = $1 ORDER BY r.peso_similaridade DESC', [req.params.id])
@@ -1156,14 +1173,25 @@ app.get('/api/estimativas/:id/pdf', wrap(async (req, res) => {
   doc.fontSize(12).text('Premissas', { underline: true }).moveDown(0.3).fontSize(10)
   doc.text(`Data-base: ${est.dataBase || '—'}`)
   doc.text(`Área-alvo: ${est.areaAlvoM2 != null ? `${est.areaAlvoM2} m²` : '—'}`)
-  doc.text(`Nível de confiança: ${est.conf != null ? `${est.conf}%` : '—'}`)
+  // nivel_confianca_pct é numeric(5,2): o pg devolve "85.00" e o template cru imprimiria "85.00%".
+  doc.text(`Nível de confiança: ${est.conf != null ? `${Math.round(Number(est.conf))}%` : '—'}`)
   doc.moveDown(0.8)
 
+  // RF-F05 — prazo em faixa (O/M/P), espelhando o bloco de custo. Doc 05 §4: "mesma lógica do
+  // custo". Um prazo único num documento que sai da empresa vira compromisso contratual.
+  const dias = (v) => (v == null ? '—' : `${v} dias`)
   doc.fontSize(12).text('Resultado', { underline: true }).moveDown(0.3).fontSize(10)
   doc.text(`Custo otimista (O): ${brl(est.o)}`)
   doc.text(`Custo provável (M): ${brl(est.m)}`)
   doc.text(`Custo pessimista (P): ${brl(est.p)}`)
-  doc.text(`Prazo provável: ${est.prazo != null ? `${est.prazo} dias` : '—'}`)
+  doc.text(`Prazo otimista (O): ${dias(est.prazoO)}`)
+  doc.text(`Prazo provável (M): ${dias(est.prazo)}`)
+  doc.text(`Prazo pessimista (P): ${dias(est.prazoP)}`)
+  if (est.prazoO == null && est.prazo == null && est.prazoP == null) {
+    doc.fillColor('#888').text('Sem prazo estimado: o acervo não tem obras encerradas com datas reais para este tipo de obra.').fillColor('#000')
+  } else if (est.prazoO != null && Number(est.prazoO) === Number(est.prazoP)) {
+    doc.fillColor('#888').text('Faixa de prazo sem dispersão: histórico insuficiente para uma faixa significativa.').fillColor('#000')
+  }
   doc.moveDown(0.8)
 
   if (refs.length) {
@@ -1212,7 +1240,13 @@ app.post('/api/importacao/analisar', express.raw({ type: '*/*', limit: '25mb' })
   const matriz = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: null })
   if (!matriz.length) return res.status(400).json({ error: 'Planilha sem dados.' })
   const headers = (matriz[0] || []).map((h) => (h == null ? '' : String(h)))
-  const linhas = matriz.slice(1).filter((r) => Array.isArray(r) && r.some((c) => c != null && c !== ''))
+  // Guarda o nº da linha ANTES de filtrar as vazias: o relatório manda o usuário abrir a planilha
+  // e ir até a linha N, então o número precisa ser o do Excel (1 = cabeçalho). Com separadores em
+  // branco no meio — comuns em planilha de obra — o índice do array filtrado já não corresponde.
+  const numeradas = matriz.slice(1)
+    .map((r, i) => ({ r, nLinha: i + 2 }))
+    .filter(({ r }) => Array.isArray(r) && r.some((c) => c != null && c !== ''))
+  const linhas = numeradas.map((x) => x.r)
   const mapa = mapearCabecalho(headers)
   const montadas = linhas.map((r) => montarLinha(r, mapa))
   // RF-C04 — sinaliza quais códigos já existem no acervo (reimportação idempotente por chave):
@@ -1221,9 +1255,82 @@ app.post('/api/importacao/analisar', express.raw({ type: '*/*', limit: '25mb' })
   const existentes = codigos.length
     ? new Set((await q('SELECT codigo FROM orcamento.obras WHERE codigo = ANY($1::text[])', [codigos])).map((r) => r.codigo))
     : new Set()
-  const previa = montadas.slice(0, 10).map((l) => ({ ...l, existe: !!l.codigo && existentes.has(l.codigo) }))
+
+  // RF-C02 — a validação acontece AQUI, na prévia, e não só no confirmar: quem manda gravar
+  // precisa saber antes o que será rejeitado e o que entrará capenga. Valida TODAS as linhas
+  // (a prévia mostra 10, mas o erro pode estar na linha 500).
+  //
+  // Cadastros não encontrados só dá para checar aqui, com banco: o confirmar resolve
+  // tipo/padrão/localidade por nome e grava NULL silenciosamente quando não acha — a obra entra
+  // sem tipo e nunca mais aparece como análoga de nada.
+  const chaveLoc = (l) => `${(l.municipio || '').toLowerCase()}|${l.uf || ''}`
+  const [tiposRows, padroesRows, locRows] = await Promise.all([
+    q('SELECT lower(nome) AS n FROM orcamento.tipos_obra'),
+    q('SELECT lower(nome) AS n FROM orcamento.padroes_acabamento'),
+    q('SELECT lower(municipio) AS m, uf FROM orcamento.localidades'),
+  ])
+  const tiposSet = new Set(tiposRows.map((r) => r.n))
+  const padroesSet = new Set(padroesRows.map((r) => r.n))
+  const locSet = new Set(locRows.map((r) => `${r.m}|${r.uf}`))
+
+  // Cadastro faltando é condição GLOBAL, não da linha: se a planilha inteira usa um tipo que não
+  // está no catálogo, repetir o aviso em cada linha produz 500 mensagens idênticas que soterram os
+  // problemas reais (um custo digitado errado, por exemplo). Agrega por valor, com a contagem.
+  const faltando = new Map() // "campo|valor" → { campo, valor, linhas }
+  const marcarFalta = (campo, valor) => {
+    const k = `${campo}|${valor}`
+    const at = faltando.get(k)
+    if (at) at.linhas++
+    else faltando.set(k, { campo, valor, linhas: 1 })
+  }
+
+  const avaliadas = montadas.map((l, i) => {
+    const v = validarLinha(l)
+    if (l.tipoNome && !tiposSet.has(l.tipoNome.toLowerCase())) marcarFalta('tipo de obra', l.tipoNome)
+    if (l.padraoNome && !padroesSet.has(l.padraoNome.toLowerCase())) marcarFalta('padrão', l.padraoNome)
+    // Município sem UF é o caso mais comum de localidade perdida: a planilha traz só "Cidade" e
+    // o /confirmar exige os dois para resolver o id — sem esta guarda, a obra entra com
+    // localidade NULL e a prévia relata "0 avisos", parecendo perfeita.
+    if (l.municipio && !l.uf) marcarFalta('localidade (sem UF na planilha)', l.municipio)
+    else if (l.municipio && l.uf && !locSet.has(chaveLoc(l))) marcarFalta('localidade', `${l.municipio}/${l.uf}`)
+    return { linha: numeradas[i].nLinha, ok: v.ok, erros: v.erros, avisos: v.avisos }
+  })
+
+  const comErro = avaliadas.filter((a) => !a.ok)
+  const comAviso = avaliadas.filter((a) => a.ok && a.avisos.length)
+  const cadastrosFaltando = [...faltando.values()].sort((a, b) => b.linhas - a.linhas).slice(0, 50)
+
+  // Avisos agregados por TEXTO, pelo mesmo motivo dos cadastros: numa planilha real, um aviso
+  // estrutural (ex.: "sem custo real") repete em centenas de linhas e afogaria o aviso raro e
+  // acionável (ex.: um custo digitado 1000× maior na linha 480). Uma lista por linha cortada em
+  // 100 preservaria as repetições do começo e descartaria justamente o achado que importa.
+  const porAviso = new Map()
+  for (const a of avaliadas) {
+    for (const texto of a.avisos) {
+      const at = porAviso.get(texto)
+      if (at) { at.linhas++; if (at.exemplos.length < 5) at.exemplos.push(a.linha) }
+      else porAviso.set(texto, { aviso: texto, linhas: 1, exemplos: [a.linha] })
+    }
+  }
+  const avisos = [...porAviso.values()].sort((a, b) => b.linhas - a.linhas)
+  const previa = montadas.slice(0, 10).map((l, i) => ({
+    ...l, existe: !!l.codigo && existentes.has(l.codigo),
+    erros: avaliadas[i].erros, avisos: avaliadas[i].avisos,
+  }))
   const jaExistem = montadas.filter((l) => l.codigo && existentes.has(l.codigo)).length
-  res.json({ headers, mapa, totalLinhas: linhas.length, previa, linhas, jaExistem })
+  res.json({
+    headers, mapa, totalLinhas: linhas.length, previa, linhas, jaExistem,
+    // Erros primeiro: se a lista for truncada, o que bloqueia é mais urgente que o que só avisa.
+    resumo: { validas: avaliadas.length - comErro.length, comErro: comErro.length, comAviso: comAviso.length },
+    // Erros ficam por linha (o usuário precisa ir até ela); avisos vão agregados por texto.
+    // errosTotal/cadastrosFaltandoTotal existem para a tela poder dizer o que foi cortado —
+    // truncar em silêncio faria o relatório parecer completo quando não é.
+    problemas: comErro.slice(0, 100),
+    errosTotal: comErro.length,
+    avisos,
+    cadastrosFaltando,
+    cadastrosFaltandoTotal: faltando.size,
+  })
 }))
 
 // RF-C04 — importação idempotente por chave (obras.codigo): reimportar a mesma obra

@@ -96,14 +96,72 @@ export function montarLinha(row, mapa) {
   }
 }
 
-// Valida a linha canônica; retorna { ok, erros[] }.
+// Razão realizado/orçado a partir da qual a linha vira suspeita de erro de digitação.
+// A aderência histórica (bottom-up) é a MÉDIA dessas razões: um "1.200.000" digitado como
+// "1200000000" não é rejeitado por nada e envenena toda estimativa futura daquele tipo de obra.
+export const RATIO_SUSPEITO = 3
+
+// Valida a linha canônica; retorna { ok, erros[], avisos[] }. RF-C02.
+//
+// erros  → bloqueiam a gravação da linha (dado quebrado ou contraditório).
+// avisos → a linha GRAVA, mas não serve para algum uso. É a diferença entre "importei 200 obras"
+//          e "importei 200 obras, das quais 140 nunca vão aparecer numa estimativa" — sem isto,
+//          o acervo cresce sem que ninguém perceba que ele não sustenta o que promete.
 export function validarLinha(l) {
   const erros = []
+  const avisos = []
+
   if (!l.codigo) erros.push('código vazio')
   if (!l.nome) erros.push('nome vazio')
   if (l.areaConstruidaM2 != null && l.areaConstruidaM2 < 0) erros.push('área negativa')
   if (l.custoRealTotal != null && l.custoRealTotal < 0) erros.push('custo real negativo')
   if (l.custoOrcadoTotal != null && l.custoOrcadoTotal < 0) erros.push('custo orçado negativo')
   if (l.dtInicioReal && l.dtFimReal && l.dtFimReal < l.dtInicioReal) erros.push('fim antes do início')
-  return { ok: erros.length === 0, erros }
+
+  // Os textos abaixo afirmam CONSEQUÊNCIAS, então precisam espelhar os filtros reais do acervo —
+  // não o que seria intuitivo. As duas fontes de verdade, em server/index.js:
+  //
+  //   CAND (paramétrica):    WHERE elegivel_referencia AND area_construida_m2 > 0
+  //                            AND COALESCE(NULLIF(custo_real_total, 0), custo_orcado_total) > 0
+  //   aderenciaHistorica:    WHERE elegivel_referencia AND custo_orcado_total > 0
+  //                            AND custo_real_total > 0        (sem filtro de área)
+  //
+  // O COALESCE é a pegadinha: sem custo real (ou com ele zerado) a obra **entra** na paramétrica
+  // usando o ORÇADO — e o CAND ainda o aliasa como "custoRealTotal". Dizer "não entrará" seria
+  // tranquilizar o usuário sobre uma linha que vai puxar a estimativa com número de orçamento.
+  const custoUsado = l.custoRealTotal > 0 ? l.custoRealTotal : l.custoOrcadoTotal // = o COALESCE
+
+  // Zero/ausência são AVISO e não erro de propósito: a obra é gravável e vale como registro —
+  // rejeitar a linha perderia o histórico e quebraria a reimportação de planilhas que hoje passam.
+  // Área é o único filtro sem COALESCE, mas só exclui da paramétrica e do prazo por m².
+  if (l.areaConstruidaM2 === 0) avisos.push('área zero — fora da estimativa paramétrica e do prazo por m² (ainda conta na aderência do bottom-up)')
+
+  // Só faz sentido cobrar utilidade de quem foi marcado como referência.
+  if (l.elegivel) {
+    if (l.areaConstruidaM2 == null) avisos.push('marcada como referência mas sem área — não entrará em estimativa paramétrica')
+    if (!(custoUsado > 0)) {
+      avisos.push('sem custo real nem orçado — não entrará em estimativa paramétrica')
+    } else if (!(l.custoRealTotal > 0)) {
+      // O perigo não é ficar de fora — é entrar com o número errado.
+      avisos.push('sem custo real: o custo ORÇADO será usado como se fosse realizado na estimativa paramétrica')
+    }
+    // diasM2 exige as duas datas reais.
+    if (!l.dtInicioReal || !l.dtFimReal) avisos.push('sem datas reais completas — não contribui para estimativa de prazo')
+    // A aderência é a razão realizado/orçado, e ambos os lados exigem > 0 — logo `== null` deixaria
+    // passar o zero, que é o que uma célula com "n/a"/"a definir" vira em numero().
+    if (!(l.custoOrcadoTotal > 0)) avisos.push('sem custo orçado (ou zero) — não contribui para a aderência do bottom-up')
+    if (!(l.custoRealTotal > 0)) avisos.push('sem custo real (ou zero) — não contribui para a aderência do bottom-up')
+    // Sem data-base o custo não é trazido a valor presente: entra na conta com fator 1.
+    if (!l.dataBaseCusto) avisos.push('sem data-base — o custo não será atualizado monetariamente')
+  }
+
+  // Outlier de aderência: provável erro de digitação/unidade em um dos dois custos.
+  if (l.custoRealTotal > 0 && l.custoOrcadoTotal > 0) {
+    const r = l.custoRealTotal / l.custoOrcadoTotal
+    if (r >= RATIO_SUSPEITO || r <= 1 / RATIO_SUSPEITO) {
+      avisos.push(`custo real e orçado divergem ${r >= 1 ? `${r.toFixed(1)}×` : `1/${(1 / r).toFixed(1)}`} — confira se não há erro de digitação`)
+    }
+  }
+
+  return { ok: erros.length === 0, erros, avisos }
 }

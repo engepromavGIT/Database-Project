@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../data/api.js'
-import { brl, num, monthToDate } from '../data/format.js'
+import { brl, pct, monthToDate, prazoDias, faixaPrazo, faixaCusto, aderenciaTexto } from '../data/format.js'
 
 const escorePct = (e) => `${Math.round((e || 0) * 100)}%`
 const corConf = (r) => (r === 'Alta' ? 'var(--info)' : r === 'Média' ? 'var(--prio-medium)' : 'var(--danger)')
+
 
 async function abrirPdf(id) {
   const blob = await api.estimativaPdf(id)
@@ -20,7 +21,8 @@ function LinhaEstimativa({ e, onCalibrar }) {
       <td>{e.descricao}{e.versao ? ` (v${e.versao})` : ''}</td>
       <td><span className="chip">{e.metodo}</span></td>
       <td>{brl(e.custoProvavel)}</td>
-      <td>{e.nivelConfianca != null ? `${e.nivelConfianca}%` : '—'}</td>
+      {/* pct() e não template: nivel_confianca_pct é numeric(5,2) e o pg devolve "85.00". */}
+      <td>{pct(e.nivelConfianca)}</td>
       <td><button className="btn btn-ghost btn-sm" onClick={() => abrirPdf(e.id)}>PDF</button></td>
       <td>
         {e.custoRealizado != null
@@ -195,20 +197,23 @@ export function Estimativa() {
             <div style={{ display: 'flex', gap: 'var(--sp-4)', flexWrap: 'wrap', marginTop: 8 }}>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Custo provável</div>
                 <strong style={{ fontSize: 20 }}>{brl(resultado.custo.esperado)}</strong></div>
-              <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Faixa (O–P)</div>
-                <div>{brl(resultado.custo.O)} — {brl(resultado.custo.P)}</div></div>
+              <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Faixa de custo (O–P)</div>
+                <div>{faixaCusto(resultado.custo.O, resultado.custo.P)}</div></div>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Preço c/ BDI {resultado.bdiPct}%</div>
                 <div>{brl(resultado.preco)}</div></div>
               <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Prazo provável</div>
-                <div>{resultado.prazo?.esperado != null ? `${num(resultado.prazo.esperado)} dias` : '—'}</div></div>
-              {resultado.metodo === 'parametrica' && (
-                <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Confiança</div>
-                  <span className="chip" style={{ background: corConf(resultado.rotulo), color: '#fff' }}>
-                    {resultado.rotulo} ({resultado.nivelConfianca}%)</span></div>
-              )}
+                <div>{prazoDias(resultado.prazo?.esperado)}</div></div>
+              {/* RF-F05 — o prazo sai em faixa como o custo (doc 05 §4: "mesma lógica do custo"). */}
+              <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Faixa de prazo (O–P)</div>
+                <div title={resultado.prazo?.O == null ? 'Sem obras encerradas com datas reais no acervo para este tipo de obra.' : undefined}>
+                  {faixaPrazo(resultado.prazo?.O, resultado.prazo?.P)}</div></div>
+              {/* RF-F04 — a confiança agora vale para os dois métodos. */}
+              <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Confiança</div>
+                <span className="chip" style={{ background: corConf(resultado.rotulo), color: '#fff' }}>
+                  {resultado.rotulo} ({pct(resultado.nivelConfianca)})</span></div>
               {resultado.metodo === 'bottom_up' && (
                 <div><div style={{ color: 'var(--fg-3)', fontSize: 12 }}>Custo direto / aderência</div>
-                  <div>{brl(resultado.custoDireto)} · ×{resultado.aderencia.fator} (±{resultado.aderencia.desvio})</div></div>
+                  <div>{brl(resultado.custoDireto)} · {aderenciaTexto(resultado.aderencia)}</div></div>
               )}
               <div><button className="btn btn-secondary btn-sm" onClick={() => abrirPdf(resultado.id)}>Exportar PDF</button></div>
             </div>

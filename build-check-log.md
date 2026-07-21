@@ -1436,7 +1436,188 @@ e os 2 checks de credencial rodaram na máquina do usuário — **nenhuma senha 
 
 ---
 
-## Atualização 2026-07-16 — Correção: estimativa paramétrica gravava `custo_provavel = NULL`
+## Atualização 2026-07-20 — RF-F04 (confiança do bottom-up) + RF-F05 (faixa O–P de prazo)
+
+Primeira frente de código depois da produção no ar. Ambos os RFs eram "pequenos" no papel; o F04
+escondia uma decisão de projeto que valia mais que o código.
+
+### RF-F04 — o bottom-up passa a gravar `nivel_confianca_pct`
+Antes só a paramétrica calculava confiança; o bottom-up gravava NULL e a UI escondia o bloco.
+
+**A decisão:** *não* reusar `nivelConfianca({n, coefVar, simMedia})`. A fórmula dela é um produto de
+três penalidades `(0,5 + 0,5·x)`, e o bottom-up não tem similaridade — o encaixe "óbvio" seria passar
+`simMedia = 1`, o que **aposenta um terço do poder de punição**. Medido no código real:
+
+| Caso | Reuso com `simMedia=1` | `confiancaBottomUp` |
+|---|---|---|
+| n=8, aderência dispersa (CV 0,5) | **75% → "Alta"** | **30% → "Baixa"** |
+| n=20, CV 2,0 (realizado = 3× o orçado) | **50% → "Média"** | **10% → "Baixa"** |
+| n=12 perfeita, mas misturando tipos de obra | 89% "Alta" | **65% "Média"** |
+| n=0 (o acervo de hoje) | 0% (parece bug) | 30% "Baixa" |
+
+Com `simMedia=1` **a dispersão sozinha nunca derruba abaixo de 50%** — um histórico com 200% de
+variação ainda leria "Média". Daí `confiancaBottomUp({n, fator, desvio, tipoFiltrado})`, função nova
+e pura, na forma **base + ganho** em vez de produto que zera: n=0 não é "sem estimativa" (como na
+paramétrica, que devolve 400), é "estimativa real, não calibrada". Constantes `BU_*` explícitas
+(RNF-15). Propriedades travadas em teste: monotônica em n, "Alta" inalcançável abaixo de 4 obras,
+piso para aderência degenerada (otimista em R$ 0), entrada suja cai na base sem lançar.
+
+### RF-F05 — a faixa O–P de prazo aparece
+As três colunas já existiam e já eram gravadas; quase nenhuma superfície as exibia. Passaram a
+mostrar: card de resultado, comparação de versões, **PDF** (três linhas, espelhando o custo) e
+**`GET /api/integracao/estimativas/:id`** — a API que alimenta o processo comercial, que devolvia
+`custoReferencia` em faixa e o prazo como número único. `prazoProvavelDias` foi **mantido** no corpo:
+consumidor externo, acrescentar campo é retrocompatível, remover não é.
+
+Deliberadamente **fora**: a lista "Estimativas salvas" e `GET /api/estimativas`. A tabela não mostra
+faixa de custo nenhuma — acrescentar só a de prazo criaria a assimetria inversa. Endpoint só ganha
+campo quando uma superfície o consome.
+
+### O que o painel de projeto achou e eu não tinha visto
+- **O caso parcial estava invertido.** Eu supunha "M existe, O/P nulos" — é *impossível*. O real é o
+  oposto: `escoreSimilaridade` pode devolver **0**; se todas as análogas derem 0, `mediaPonderada`
+  retorna null (den=0) e o provável some, mas `percentil` ignora o peso e **O/P sobrevivem**. Como
+  toda superfície lia só `prazo_provavel_dias`, uma faixa legítima de 53–77 dias aparecia como "—".
+- **O mesmo furo atinge o custo** (`custo_provavel` NULL com O/P preenchidos) → é defeito separado,
+  **registrado como tarefa à parte**, não corrigido aqui.
+- **A tela já mentia:** `×1 (±0.1)` com acervo zerado exibia os *defaults* do `estatisticaAderencia`
+  como se fossem medição — uma linha ao lado do que o F04 veio corrigir.
+
+### O que a revisão adversarial pegou (5 lentes → 3 céticos por achado)
+**1 ALTA confirmada, no código que eu escrevi para corrigir esse exato pecado.** O `aderenciaTexto`
+guardava em `n > 0`, mas `estatisticaAderencia` só **mede** o desvio a partir de `n >= 2`: com uma
+obra, o `±0,1` é a **mesma constante do acervo vazio**. O texto imprimia `×1.15 (±0.1) · 1 obra` —
+e o sufixo "· 1 obra", que eu havia acrescentado, transformava um número ambíguo na **afirmação de
+que aquela obra sustenta os ±10%**. Pior, era incoerente comigo mesmo no mesmo card: a confiança
+devolvia "Baixa (30%)" *precisamente porque* o desvio é default. E não era hipótese — com 0 obras
+hoje, **n=1 é o próximo estado garantido da produção**.
+
+**Correção na raiz:** quem fabrica o default passou a denunciá-lo. `estatisticaAderencia` devolve
+`desvioMedido`, que viaja na resposta até a tela — o limiar deixou de viver em três lugares.
+`AD_N_DESVIO` (2, "o desvio é medido?") e `BU_N_DISP` (3, "a dispersão sustenta confiança?") são
+perguntas diferentes e estão documentadas como tais. E `aderenciaTexto` saiu do JSX para o
+`format.js`: o defeito estava em lógica de apresentação **sem teste**.
+
+Outros 2 achados foram **refutados 3/3** — culpavam esta mudança por comportamento pré-existente.
+
+### Verificação
+`npm run check` limpo (16 arquivos) · **`npm test` 296 passou, 0 falhou** (eram 240; Bottom-up 10→34,
+**`tests/format.test.mjs` novo com 32**) · `npm run build` OK. Além disso: INSERT do bottom-up
+validado **contra o banco de dev em transação com ROLLBACK** (18 colunas ↔ 18 valores ↔ 17
+parâmetros, confiança na coluna certa) e `format.js` exercitado **no navegador**, via dev server.
+
+Achado de brinde nessa checagem: `nivel_confianca_pct` é `numeric(5,2)` e **o pg devolve `"85.00"`
+como string** — o card (número fresco) mostrava `85%` e a lista (lido do banco) `85.00%`. Uniformizado
+com o `pct()` que já existia, em tela, cenários e PDF, antes que o F04 espalhasse isso por mais
+superfícies.
+
+### Estado
+Backlog de código reduzido a **RF-C01/C02** (validação na prévia de importação + PDF na web). O maior
+valor agora é **dado**: colar as séries reais SINAPI/INCC (o importador em lote está pronto) e
+carregar mais orçamentos — cada obra encerrada melhora a estimativa de quem já usa o módulo no ar.
+
+### Para o Cowork
+> Handoff de vocês conferido e commitado — verifiquei por conta própria antes (296/296, check e build
+> limpos), e uma correção ao handoff: `.claude/launch.json` **não** estava modificado, não havia o que
+> descartar. Os `_rprobe*.mjs` eram rascunhos dos meus próprios agentes de revisão e foram removidos.
+> O que vale registrar: a revisão adversarial pegou **1 ALTA no código escrito para corrigir esse
+> mesmo tipo de defeito** — o texto de aderência creditava a 1 obra um desvio que é constante
+> hardcoded. A lição que ficou no código é que **quem fabrica um default é quem tem de expor isso**
+> (`desvioMedido`), em vez de cada tela reimplementar o limiar. Vale a pena olhar se há outros lugares
+> onde um default de `estatisticaAderencia`/`estimarBottomUp` chega à tela sem ressalva — a largura da
+> faixa O–P do bottom-up com n=1, por exemplo, é inteiramente derivada do `desvio = 0,1` assumido.
+
+---
+
+## Atualização 2026-07-20 (2) — RF-C01/C02: validação antecipada para a prévia da importação
+
+Último item do backlog de código. O defeito era literal: `validarLinha` só aparecia **dentro do
+`/confirmar`**. A prévia mostrava 10 linhas bonitas, o botão dizia "Importar 500 linha(s)", e o
+usuário só descobria as 80 rejeitadas **depois** de mandar gravar.
+
+### O que mudou
+- **Avisos** (`validarLinha` agora devolve `{ ok, erros, avisos }`). A linha grava, mas não serve
+  para algum uso — a diferença entre "importei 200 obras" e "importei 200 obras das quais 140 nunca
+  vão aparecer numa estimativa". Com o acervo em 0 e o `DADOS.md` prestes a carregar dados reais,
+  isso deixa de ser teórico.
+- **Outlier de aderência** (`RATIO_SUSPEITO = 3`): um `1.200.000` digitado como `1200000000` não era
+  barrado por nada e envenena todo bottom-up futuro daquele tipo de obra.
+- **`/analisar` valida TODAS as linhas** (a prévia mostra 10, o erro pode estar na 500) e devolve
+  `resumo`, `problemas` (erros por linha), `avisos` (agregados) e `cadastrosFaltando`.
+- **`cadastrosFaltando`**: o `/confirmar` resolve tipo/padrão/localidade **por nome** e grava `NULL`
+  em silêncio quando não acha — a obra entra sem tipo e some das análogas. Risco concreto: o catálogo
+  tem `Industrial/Comercial/…` e nenhum `Galpão`; em CE só existe `Umari`.
+- **UI**: chips de resumo, blocos de erro/aviso, chip "erro"/⚠ na própria prévia (RF-C01: "linhas
+  inválidas sinalizadas"), e o botão passou a dizer a verdade — "Importar N válida(s) de M",
+  desabilitado quando `validas === 0`.
+
+### Duas decisões contra o primeiro impulso
+1. **Zero virou aviso, não erro.** Marcar `área zero`/`custo real zero` como erro rejeitaria linhas
+   que hoje importam — quem reimportasse a mesma planilha (RF-C04) veria obras sumirem. Zero é dado
+   inútil, não contraditório.
+2. **Cadastro faltando saiu do por-linha.** A 1ª versão repetia o aviso em cada linha; o probe mostrou
+   7 linhas com o mesmo ruído e o `divergem 1000×` soterrado. Agregado com contagem, vira ação única.
+
+### O que a revisão adversarial pegou — 10 confirmados, **4 ALTA com 0/3 refutações**
+**O defeito central foi meu, e é o mesmo pecado que persegui a sessão inteira: escrevi avisos que
+afirmam consequências FALSAS**, deduzindo o que *deveria* acontecer em vez de ler a query real.
+
+O `CAND` da paramétrica é `COALESCE(NULLIF(custo_real_total, 0), custo_orcado_total) > 0`. Ou seja:
+uma obra **sem custo real ENTRA** na estimativa — usando o **orçado**, que o CAND ainda aliasa como
+`"custoRealTotal"`. Meu aviso dizia *"não entrará em estimativa paramétrica"*: o **oposto da
+verdade**, tranquilizando o usuário sobre uma linha que vai **puxar a estimativa** com número de
+orçamento. Idem para `custo real zero` (o `NULLIF` faz o zero cair no mesmo COALESCE) e para
+`área zero — não entrará em NENHUMA estimativa` (a `aderenciaHistorica` não filtra por área).
+
+Correções, todas ancoradas nas queries e não em suposição:
+| Achado | Correção |
+|---|---|
+| "sem custo real → fica de fora" (ALTA, 0/3) | Espelha o COALESCE: avisa a **substituição** ("o ORÇADO será usado como se fosse realizado"); "fica de fora" só quando **nenhum** dos dois custos existe |
+| "custo real zero → nenhuma estimativa" (ALTA, 0/3) | Mesmo COALESCE via `NULLIF` |
+| "área zero → nenhuma estimativa" (MEDIA) | Diz de onde sai **e onde ainda conta** (aderência) |
+| custo orçado **zero** não avisava (MEDIA) | `== null` não pega `0` — e `numero("n/a")` é `0`. Trocado por `!(x > 0)` |
+| Corte em 100 preservava 96 repetições e **descartava** o outlier da linha 480 (ALTA) | Avisos **agregados por texto** com contagem + exemplos; erros seguem por linha; `errosTotal`/`cadastrosFaltandoTotal` comunicam o corte |
+| Município **sem UF** não sinalizado (MEDIA) | Caso mais comum de `localidade_id` NULL — planilha só com "Cidade" |
+| Nº de linha errado com separadores em branco (MEDIA) | O índice era do array **já filtrado**; preservado antes do filtro |
+| `cadastrosFaltando` sem cap (BAIXA) | `slice(0, 50)` + scroll + "…e mais N" |
+
+Outros 6 achados foram **refutados** (pré-existentes ou atribuição incorreta a esta mudança).
+
+### Verificação
+`npm run check` limpo · **`npm test` 327 passou, 0 falhou** (Importação 29→52) · `npm run build` OK.
+Além disso, contra o **banco de dev**:
+- Obra sem custo real inserida em `BEGIN/ROLLBACK` → o `CAND` **devolve** a obra, alias
+  `"custoRealTotal" = 900000` (o orçado), `custoM2 = 1800 R$/m²`, e **não** entra na aderência.
+  Veredito automatizado no probe: *"aviso contradiz o CAND? NÃO ✅"*.
+- Nº de linha provado com `.xlsx` real com separadores: erro na **linha 5** era relatado como
+  "Linha 3"; agora acerta.
+- As 4 formas de resposta exercitadas no navegador, **inclusive a resposta antiga** sem os campos
+  novos (degrada sem quebrar).
+
+### Achado de passagem — **não corrigido**, registrado
+`mapear.js` → `data('06/2023')` devolve a string **`"undefined-06-01"`**: a regex `MM/YYYY` tem 2
+grupos e o código usa `m[3]`. É **pré-existente** (refutado como defeito desta mudança, 2/3), mas é
+real e sério — o valor é *truthy*, passa na validação, e estoura `22007 invalid input syntax for
+type date` no INSERT do `/confirmar`, deixando importação **parcialmente** gravada. Atinge qualquer
+planilha com data-base em `MM/AAAA`, formato que os próprios sinônimos (`mesbase`/`database`)
+convidam — ou seja, é bem provável na carga real do `DADOS.md`.
+
+### Estado
+Backlog de código do MVP **zerado** (RF-C01/C02 era o último). Sobram: o bug do `MM/AAAA` acima, o
+`custo_provavel` NULL com escore 0 (registrado antes) e o item B do handoff (documentado em
+`docs/05` §3.3 por decisão do usuário). O maior valor agora é **dado** — runbook em `DADOS.md`.
+
+### Para o Cowork
+> RF-C01/C02 fechado, e a lição do dia repete a da manhã: **avisos são afirmações e precisam ser
+> verificados contra o código que descrevem**. Escrevi 5 avisos por dedução e 3 estavam factualmente
+> errados — o pior deles dizia que uma obra sem custo real ficaria de fora da paramétrica quando o
+> `COALESCE` do `CAND` faz ela **entrar com o orçado no lugar do realizado**. Se vocês forem mexer
+> em texto que promete consequência ao usuário, vale o mesmo ritual: abrir a query e conferir.
+> **Prioridade sugerida para vocês:** o bug do `data('MM/AAAA')` → `"undefined-06-01"`, que quebra
+> importação no meio e é provável na carga real que está para acontecer.
+---
+
+## Atualização 2026-07-21 — Correção: estimativa paramétrica gravava `custo_provavel = NULL`
 
 **Executado por:** Claude Code · Node v24.18.0 / npm 11.16.0 · worktree `festive-cray-47bd31`
 
