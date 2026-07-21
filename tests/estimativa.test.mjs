@@ -40,6 +40,27 @@ near(est.O, 3458160, 1, 'paramétrico O (otimista)')
 near(est.P, 3607920, 1, 'paramétrico P (pessimista)')
 ok(est.esperado >= est.O && est.esperado <= est.P, 'esperado dentro da faixa O..P')
 
+// --- regressão: escore 0 e o custo provável pela metade ---
+// Uma obra pode ser totalmente dissimilar do alvo e receber escore exatamente 0 (tipo diferente,
+// padrão a 2 de distância, área com diferença >= 100%, localidade/UF diferentes e 10+ anos mais velha).
+ok(escoreSimilaridade(alvo, {
+  tipoObraId: 't2', padraoOrdem: 3, areaConstruidaM2: 3000, localidadeId: 'l2', uf: 'RJ', recencia: 0,
+}) === 0, 'escore totalmente dissimilar = 0')
+
+// Como o escore é o peso da média ponderada, escore 0 em todas as análogas zera o denominador e o
+// custo provável (M) sai null — enquanto O e P, vindos de percentil, ignoram o peso e saem preenchidos.
+// POST /api/estimativas recusa esse caso com 400 (soma dos escores == 0) em vez de gravar a estimativa
+// sem custo provável, o que quebraria a calibração (RF-F08) em silêncio.
+const zerado = estimarParametrico([{ custoM2: 2800, peso: 0 }, { custoM2: 3000, peso: 0 }], 1000)
+ok(zerado.custoM2Prov === null, 'pesos todos 0: custoM2Prov null')
+ok(zerado.M === null && zerado.esperado === null, 'pesos todos 0: M e esperado null')
+ok(zerado.O != null && zerado.P != null, 'pesos todos 0: O e P seguem preenchidos (percentil ignora peso)')
+ok(mediaPonderada([{ valor: 100, peso: 0 }]) === null, 'mediaPonderada com peso 0 = null (não cai p/ média simples)')
+
+// O mesmo furo atinge o prazo, que usa mediaPonderada do mesmo jeito.
+const pzZero = estimarPrazo([{ valor: 0.3, peso: 0 }], 1000)
+ok(pzZero.diasM2 === null && pzZero.esperado === null, 'prazo com pesos 0: diasM2 e esperado null')
+
 const pz = estimarPrazo([{ valor: 0.3, peso: 1 }, { valor: 0.4, peso: 1 }], 1000)
 near(pz.M, 350, 1e-9, 'prazo M')
 near(pz.esperado, 350, 1e-9, 'prazo esperado')

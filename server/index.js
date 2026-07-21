@@ -5,6 +5,7 @@
 // em nenhuma tabela do app existente.
 // ============================================================
 import 'dotenv/config'
+import { pathToFileURL } from 'url'
 import express from 'express'
 import cors from 'cors'
 import * as XLSX from 'xlsx'
@@ -21,7 +22,10 @@ import { parseSerieIndices } from './importacao/indices.js'
 import { conciliarLista } from './importacao/conciliar.js'
 import { registrarObraDetalhe, ANEXO_UPLOAD_MAX_MB } from './obraDetalhe.js'
 
-const app = express()
+// `app` é exportado para os testes de endpoint (tests/estimativa.http.test.mjs), que sobem
+// o Express num porta efêmera. O listener real só sobe quando este arquivo é o entrypoint
+// (ver o guard isMain no final) — importar o módulo NÃO conecta ao banco nem abre porta.
+export const app = express()
 
 const origins = (process.env.CORS_ORIGIN || '*').split(',').map(s => s.trim()).filter(Boolean)
 app.use(cors({ origin: origins.includes('*') ? true : origins }))
@@ -1048,6 +1052,14 @@ app.post('/api/estimativas', wrap(async (req, res) => {
     : analogas.slice(0, 5)
   if (!analogas.length) return res.status(400).json({ error: 'Nenhuma obra análoga elegível encontrada.' })
 
+  // Os escores são os pesos da média ponderada: se todos forem 0, o custo provável sai null
+  // (mas O e P, que vêm de percentil e ignoram peso, sairiam preenchidos) e a estimativa seria
+  // gravada pela metade, sem custo provável e sem chance de calibração (RF-F08).
+  const somaEscores = analogas.reduce((s, a) => s + a.escore, 0)
+  if (!(somaEscores > 0)) {
+    return res.status(400).json({ error: 'As obras selecionadas não têm similaridade suficiente com o alvo. Refine o tipo/padrão/área ou escolha outras referências.' })
+  }
+
   const custo = estimarParametrico(analogas.map((a) => ({ custoM2: a.custoM2, peso: a.escore })), alvo.areaAlvoM2)
   const prazo = estimarPrazo(analogas.map((a) => ({ valor: a.diasM2, peso: a.escore })), alvo.areaAlvoM2)
   const simMedia = analogas.reduce((s, a) => s + a.escore, 0) / analogas.length
@@ -1208,7 +1220,12 @@ app.post('/api/estimativas/:id/realizado', wrap(async (req, res) => {
   const [est] = await q('SELECT custo_provavel FROM orcamento.estimativas WHERE id = $1', [req.params.id])
   if (!est) return res.status(404).json({ error: 'Estimativa não encontrada.' })
   const prov = Number(est.custo_provavel) || 0
-  const erro = prov > 0 ? round2(((Number(custoRealizado) - prov) / prov) * 100) : null
+  // Sem custo provável não há base para o erro: recusa em vez de gravar o realizado com erro_pct null,
+  // o que deixaria a estimativa fora da calibração sem nenhum sinal para o usuário.
+  if (!(prov > 0)) {
+    return res.status(400).json({ error: 'Esta estimativa não tem custo provável e não pode ser calibrada. Gere a estimativa novamente com obras de referência mais similares.' })
+  }
+  const erro = round2(((Number(custoRealizado) - prov) / prov) * 100)
   await q('UPDATE orcamento.estimativas SET custo_realizado = $2, erro_pct = $3 WHERE id = $1',
     [req.params.id, custoRealizado, erro])
   await registrarLog(req, 'update', 'estimativa', req.params.id)
@@ -1421,13 +1438,19 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: err.message })
 })
 
-q('SELECT 1 FROM orcamento.obras LIMIT 1')
-  .catch(() => console.warn('[base-projetos] schema "orcamento" não encontrado — rode db/migrations/001..004 na sua branch do Neon.'))
-  .finally(() => {
-    // Auditoria é best-effort (não derruba operação), então uma tabela ausente passaria
-    // silenciosa. Avisar cedo se a trilha (RF-H05) não puder ser gravada nesta branch.
-    q("SELECT to_regclass('orcamento.log_auditoria') AS t")
-      .then(([r]) => { if (!r || !r.t) console.warn('[base-projetos] AVISO: orcamento.log_auditoria ausente — a trilha de auditoria NÃO será gravada (rode as migrations).') })
-      .catch(() => {})
-    app.listen(PORT, () => console.log(`[base-projetos] API em http://localhost:${PORT}`))
-  })
+// Startup só quando executado como entrypoint (`node server/index.js`). Ao ser IMPORTADO
+// — por um teste de endpoint — não conecta ao banco nem abre a porta; o teste controla o
+// ciclo de vida do servidor. Comparo URLs (não caminhos) para evitar barra/contrabarra no Windows.
+const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href
+if (isMain) {
+  q('SELECT 1 FROM orcamento.obras LIMIT 1')
+    .catch(() => console.warn('[base-projetos] schema "orcamento" não encontrado — rode db/migrations/001..004 na sua branch do Neon.'))
+    .finally(() => {
+      // Auditoria é best-effort (não derruba operação), então uma tabela ausente passaria
+      // silenciosa. Avisar cedo se a trilha (RF-H05) não puder ser gravada nesta branch.
+      q("SELECT to_regclass('orcamento.log_auditoria') AS t")
+        .then(([r]) => { if (!r || !r.t) console.warn('[base-projetos] AVISO: orcamento.log_auditoria ausente — a trilha de auditoria NÃO será gravada (rode as migrations).') })
+        .catch(() => {})
+      app.listen(PORT, () => console.log(`[base-projetos] API em http://localhost:${PORT}`))
+    })
+}
