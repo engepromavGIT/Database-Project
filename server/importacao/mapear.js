@@ -57,17 +57,34 @@ export function numero(v) {
   return isFinite(n) ? n : null
 }
 
-// Converte para 'YYYY-MM-DD' (ou 'YYYY-MM-01' quando vier só mês).
+// Existe no calendário? '2023-13-01' e '2023-02-31' têm a FORMA de uma data e o Postgres
+// recusa as duas (22007/22008) — conferir só o formato com /^\d{4}-\d{2}-\d{2}$/ não basta.
+function existeNoCalendario(ano, mes, dia) {
+  if (mes < 1 || mes > 12 || dia < 1) return false
+  // Dia 0 do mês seguinte = último dia deste mês (resolve fevereiro/bissexto sem tabela).
+  return dia <= new Date(Date.UTC(ano, mes, 0)).getUTCDate()
+}
+
+// Converte para 'YYYY-MM-DD' (ou 'YYYY-MM-01' quando vier só mês). Devolve null para
+// qualquer coisa que não seja uma data real — NUNCA uma string inválida.
+//
+// Cada ramo nomeia ano/mes/dia em vez de devolver um template com m[1..3] direto: era daí que
+// vinha o `${m[3]}-${m[1]}-01` no ramo MM/AAAA, cujo grupo 3 não existe. O resultado,
+// "undefined-06-01", é truthy — passava em `if (!l.dataBaseCusto)` na validação, a prévia
+// aprovava a linha, e o INSERT do /confirmar estourava 22007 no meio do laço (que não é
+// transacional), deixando a planilha gravada pela metade.
 export function data(v) {
   if (v == null || v === '') return null
   if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10)
   const s = String(v).trim()
-  let m
-  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return `${m[1]}-${m[2]}-${m[3]}`
-  if ((m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/))) return `${m[3]}-${m[2]}-${m[1]}`
-  if ((m = s.match(/^(\d{4})-(\d{2})$/))) return `${m[1]}-${m[2]}-01`
-  if ((m = s.match(/^(\d{2})\/(\d{4})$/))) return `${m[3]}-${m[1]}-01`
-  return null
+  let m, ano, mes, dia
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) [ano, mes, dia] = [m[1], m[2], m[3]]
+  else if ((m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/))) [ano, mes, dia] = [m[3], m[2], m[1]]
+  else if ((m = s.match(/^(\d{4})-(\d{2})$/))) [ano, mes, dia] = [m[1], m[2], '01']
+  else if ((m = s.match(/^(\d{2})\/(\d{4})$/))) [ano, mes, dia] = [m[2], m[1], '01']
+  else return null
+  // Único ponto de saída: as regexes garantem a forma, isto garante o conteúdo.
+  return existeNoCalendario(+ano, +mes, +dia) ? `${ano}-${mes}-${dia}` : null
 }
 
 const texto = (v) => (v == null ? null : String(v).trim() || null)
@@ -79,6 +96,17 @@ export function ehVerdadeiro(v) {
 // Monta uma linha canônica a partir de uma linha bruta (array) + o mapa.
 export function montarLinha(row, mapa) {
   const get = (c) => { const i = mapa[c]; return i == null ? null : row[i] }
+  // Célula PREENCHIDA que não virou data ≠ célula vazia, e a diferença tem que ser dizível.
+  // Sem isto o guard de data() troca um estouro no INSERT por uma perda de dado silenciosa:
+  // uma coluna inteira em 'mar/23' viraria NULL e a obra gravaria como se a planilha nunca
+  // tivesse trazido a data. `datasIlegiveis` leva o fato até validarLinha.
+  const datasIlegiveis = []
+  const dataDe = (campo, rotulo) => {
+    const bruto = get(campo)
+    const d = data(bruto)
+    if (d == null && bruto != null && String(bruto).trim() !== '') datasIlegiveis.push(rotulo)
+    return d
+  }
   return {
     codigo: texto(get('codigo')),
     nome: texto(get('nome')),
@@ -89,10 +117,11 @@ export function montarLinha(row, mapa) {
     areaConstruidaM2: numero(get('areaConstruidaM2')),
     custoRealTotal: numero(get('custoRealTotal')),
     custoOrcadoTotal: numero(get('custoOrcadoTotal')),
-    dtInicioReal: data(get('dtInicioReal')),
-    dtFimReal: data(get('dtFimReal')),
-    dataBaseCusto: data(get('dataBaseCusto')),
+    dtInicioReal: dataDe('dtInicioReal', 'início'),
+    dtFimReal: dataDe('dtFimReal', 'fim'),
+    dataBaseCusto: dataDe('dataBaseCusto', 'data-base'),
     elegivel: ehVerdadeiro(get('elegivel')),
+    datasIlegiveis,
   }
 }
 
@@ -117,6 +146,15 @@ export function validarLinha(l) {
   if (l.custoRealTotal != null && l.custoRealTotal < 0) erros.push('custo real negativo')
   if (l.custoOrcadoTotal != null && l.custoOrcadoTotal < 0) erros.push('custo orçado negativo')
   if (l.dtInicioReal && l.dtFimReal && l.dtFimReal < l.dtInicioReal) erros.push('fim antes do início')
+
+  // Data preenchida mas ilegível. AVISO e não erro pelo mesmo motivo do zero logo abaixo: hoje
+  // uma célula 'a definir' em dt_fim já importa (data() devolve null), e promovê-la a erro
+  // passaria a BLOQUEAR planilhas que passam — regressão pior que o dado faltando. Como aviso,
+  // a agregação por texto do /previa transforma "180 linhas com data-base em mar/23" em uma
+  // ação única, e a reimportação é idempotente (RF-C04): corrigir a planilha e reenviar basta.
+  for (const rotulo of l.datasIlegiveis || []) {
+    avisos.push(`${rotulo}: data em formato não reconhecido — o campo será gravado VAZIO (use AAAA-MM-DD, DD/MM/AAAA ou MM/AAAA)`)
+  }
 
   // Os textos abaixo afirmam CONSEQUÊNCIAS, então precisam espelhar os filtros reais do acervo —
   // não o que seria intuitivo. As duas fontes de verdade, em server/index.js:

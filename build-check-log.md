@@ -1615,3 +1615,111 @@ Backlog de código do MVP **zerado** (RF-C01/C02 era o último). Sobram: o bug d
 > em texto que promete consequência ao usuário, vale o mesmo ritual: abrir a query e conferir.
 > **Prioridade sugerida para vocês:** o bug do `data('MM/AAAA')` → `"undefined-06-01"`, que quebra
 > importação no meio e é provável na carga real que está para acontecer.
+
+---
+
+## Atualização 2026-07-20 — bug `data('MM/AAAA')` → `"undefined-06-01"` (corrigido)
+
+Era o item que a própria sessão do RF-C01/C02 deixou registrado como "achado de passagem" e
+recomendou como prioridade. Corrigido antes da carga real do `DADOS.md`.
+
+| Comando | Resultado | Observações |
+|---------|-----------|-------------|
+| npm run check | ✅ | sintaxe OK nos 16 arquivos |
+| npm test | ✅ | **354 passou, 0 falhou** (Importação 52 → 79) |
+| npm run build | ✅ | vite v8.1.0; 30 módulos em 332ms |
+
+### O defeito
+`server/importacao/mapear.js` → `data()`: o ramo `MM/AAAA` tinha **2** grupos de captura e o
+retorno usava `m[3]` (`${m[3]}-${m[1]}-01`). `data('06/2023')` devolvia a **string**
+`"undefined-06-01"` — que é *truthy*, passava em `if (!l.dataBaseCusto)` na validação, a prévia
+**aprovava** a linha, e o INSERT do `/confirmar` estourava no meio do laço não-transacional,
+deixando a planilha gravada pela metade. Os outros 3 ramos foram conferidos: índices corretos.
+
+### O que a verificação acrescentou ao diagnóstico original
+Probe contra o **banco de dev** (`SELECT $1::date`, sem tabela e sem escrita) confirmou o 22007 —
+e revelou um **segundo caminho para o mesmo crash, não previsto no diagnóstico**:
+
+| Planilha | `data()` antes | Postgres |
+|---|---|---|
+| `06/2023` | `"undefined-06-01"` | ❌ **22007** invalid input syntax |
+| `13/2023` | `"undefined-13-01"` | ❌ **22007** |
+| `31/02/2023` | `"2023-02-31"` | ❌ **22008** date/time field value out of range |
+| `2023-02-29` | `"2023-02-29"` | ❌ **22008** (não bissexto) |
+
+As duas últimas **não passam pelo bug do `m[3]`** — são datas com a FORMA certa e o conteúdo
+impossível, e já quebravam antes. Consequência prática: a guarda sugerida no diagnóstico
+(`/^\d{4}-\d{2}-\d{2}$/`) teria deixado passar exatamente esses dois casos. Trocada por validação
+de **calendário** (`dia <= último dia do mês`, resolvendo bissexto sem tabela).
+
+### Correções
+1. **`m[3]` → `m[2]`**, com os 4 ramos reescritos para nomear `[ano, mes, dia]` em vez de devolver
+   template com `m[1..3]` direto — é dessa forma que o erro de índice se torna difícil de repetir.
+2. **Ponto de saída único** com `existeNoCalendario()`: as regexes garantem a forma, ele garante o
+   conteúdo. `data()` agora devolve `null` ou uma data real — **nunca** string inválida.
+3. **`datasIlegiveis` em `montarLinha` + aviso em `validarLinha`.** Sem isto a guarda trocaria um
+   estouro no INSERT por **perda de dado silenciosa**: uma coluna inteira em `mar/23` viraria NULL
+   e a obra gravaria como se a planilha nunca tivesse trazido a data — e o aviso existente
+   ("sem data-base") seria *factualmente falso*, o mesmo pecado que a sessão anterior caçou.
+   É **aviso e não erro** de propósito: hoje uma célula `a definir` em dt_fim já importa
+   (`data()` devolve `null`), e promovê-la a erro passaria a **bloquear planilhas que passam**.
+   Como aviso, a agregação por texto do `/previa` vira uma ação única e a reimportação é
+   idempotente (RF-C04).
+4. **27 testes novos** cobrindo MM/AAAA, AAAA-MM, DD/MM/AAAA, ISO com hora, lixo (`n/a`, ``,
+   `a definir`, `15-03-2024`), mês 00/13, 31/02, 29/02 em ano comum **e** bissexto, forma da saída
+   e o contrato de `datasIlegiveis`.
+
+### Avaliado e **não** feito — transação no `/confirmar` (recomendação)
+O laço continua sem `BEGIN/COMMIT`. **Achado que muda a conta:** `server/db.js:23` já exporta um
+helper `tx(fn)` pronto — não é trabalho de infraestrutura, é envolver o laço e trocar `q` por
+`client.query`. **Recomendo fazer**, como tarefa própria, porque tem decisão de produto embutida
+que não cabia nesta correção: hoje 200 linhas com 1 ruim gravam 199; com transação, gravam 0.
+Para reimportação idempotente o tudo-ou-nada é quase certamente o certo, mas é o usuário que
+decide. Nota lateral: o handler de erro traduz 22003/22P02 mas **não** 22007/22008 — se algum
+caminho de data inválida sobreviver, o usuário vê um 500 cru.
+
+**Conclusão:** pipeline limpo. O bug prioritário registrado na sessão anterior está fechado, com o
+formato `MM/AAAA` (convidado pelos sinônimos `mesbase`/`database`) agora seguro para a carga real
+do `DADOS.md`. Backlog remanescente: transação no `/confirmar` e `custo_provavel` NULL com escore 0.
+
+---
+
+## Atualização 2026-07-20 (cont.) — transação no `/confirmar` (implementada)
+
+Fechada a recomendação da entrada anterior. O laço de `POST /api/importacao/confirmar` agora roda
+dentro de `tx()` (`server/db.js:23`, já existente e já usado no restante do código) — os 6 acessos
+ao banco passaram de `q()` para o `client.query` da transação; `registrarLog` ficou **fora** dela
+(pool próprio, best-effort, só registra carga que commitou).
+
+| Comando | Resultado |
+|---------|-----------|
+| npm run check | ✅ 16 arquivos |
+| npm test | ✅ **354 passou, 0 falhou** |
+| npm run build | ✅ vite v8.1.0; 30 módulos |
+
+### Semântica escolhida — e a que foi descartada
+**Atômico contra FALHA, não contra erro de validação.** Uma linha que estoura no meio (custo fora
+da faixa → 22003, ou uma data inválida que escapasse do saneamento → 22007/22008) agora faz
+**ROLLBACK do lote inteiro**: antes, o autocommit por statement deixava as obras anteriores gravadas
+e a planilha entrava pela metade, com 500 genérico. Linha com **erro de validação** continua
+**pulada-e-reportada** (não estoura) — não entra no rollback.
+
+Descartei o "tudo-ou-nada estrito" (qualquer erro de validação → grava 0) porque a tela é construída
+sobre o import parcial: o botão confirmar habilita com `resumo.validas > 0`
+([Importar.jsx:189](src/screens/Importar.jsx:189)) e o resultado mostra "X inseridas · N com erro"
+([Importar.jsx:206](src/screens/Importar.jsx:206)). Estrito exigiria também mexer no front (desabilitar
+confirmar quando `errosTotal > 0`) — fora do escopo de "fazer a transação". Se vocês quiserem o
+estrito, é essa a mudança de front que falta; falem que eu faço.
+
+### Verificação — atomicidade provada contra o banco de dev (sem resíduo)
+Probe descartável, resíduo conferido depois em **0**:
+- **`tx()` real, lote `[A, B, C=99999, D]`**: `C` estoura **22003**; após o rollback, `A` e `B`
+  (inseridas *antes* de `C`) **não** ficaram no banco → `count = 0`. Veredito: **ATÔMICO ✅**.
+- **INSERT real do `/confirmar` em `orcamento.obras`** dentro de `BEGIN/ROLLBACK`: executa (visível
+  como 1 dentro da transação), e após o `ROLLBACK` o banco volta a **0** — SQL válido, zero resíduo.
+- Sanidade final: `obras WHERE codigo='__TXPROBE__'` = 0 e `_txprobe` = `null`.
+
+Nota já registrada e ainda válida: o handler de erro traduz **22003/22P02** (→ 400 "valor fora da
+faixa"), então uma linha de custo estourado agora devolve **400 limpo + rollback** em vez de 500 no
+meio. **22007/22008** seguem sem tradução, mas com o saneamento de `data()` não há mais caminho de
+data inválida chegando ao INSERT por estes campos.

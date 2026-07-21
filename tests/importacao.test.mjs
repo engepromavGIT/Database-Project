@@ -22,6 +22,50 @@ eq(data('01/03/2024'), '2024-03-01', 'data DD/MM/YYYY')
 eq(data('2024-12-15'), '2024-12-15', 'data ISO')
 eq(data('2024-03'), '2024-03-01', 'data só mês')
 
+// REGRESSÃO (bug pré-existente, achado na revisão do RF-C01/C02): o ramo MM/AAAA tinha 2 grupos
+// de captura e o retorno usava m[3] → data('06/2023') devolvia a STRING "undefined-06-01".
+// O valor é truthy: passava em `if (!l.dataBaseCusto)`, a prévia APROVAVA a linha, e o INSERT do
+// /confirmar estourava 22007 no meio do laço não-transacional — planilha gravada pela metade.
+eq(data('06/2023'), '2023-06-01', 'data MM/AAAA (era "undefined-06-01")')
+eq(data('12/1999'), '1999-12-01', 'data MM/AAAA fim de ano')
+// O formato é convidado pelos próprios sinônimos do mapeamento (mesbase/database).
+eq(montarLinha(['06/2023'], { dataBaseCusto: 0 }).dataBaseCusto, '2023-06-01', 'MM/AAAA pela montarLinha')
+
+// Nenhuma saída pode ser string fora de AAAA-MM-DD: é isso que o INSERT recebe.
+for (const v of ['01/03/2024', '2024-12-15', '2024-03', '06/2023', '2024-12-15T10:00:00Z'])
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(data(v)), `data(${JSON.stringify(v)}) tem forma AAAA-MM-DD`)
+
+// Lixo → null (nunca string inválida): a validação detecta campo vazio, o Postgres não.
+eq(data('n/a'), null, 'data lixo textual')
+eq(data(''), null, 'data vazia')
+eq(data(null), null, 'data null')
+eq(data('a definir'), null, 'data texto livre')
+eq(data('15-03-2024'), null, 'data DD-MM-AAAA não é suportado (não vira 15 de março do ano 15)')
+
+// FORMA válida, calendário inválido — o Postgres recusa as duas (22007/22008), então uma guarda
+// só de formato (/^\d{4}-\d{2}-\d{2}$/) deixaria passar exatamente o que se quis evitar.
+eq(data('13/2023'), null, 'mês 13 em MM/AAAA')
+eq(data('2023-13'), null, 'mês 13 em AAAA-MM')
+eq(data('00/2023'), null, 'mês 00')
+eq(data('31/02/2023'), null, '31 de fevereiro')
+eq(data('30/02/2024'), null, '30 de fevereiro em ano bissexto')
+eq(data('2023-02-29'), null, '29/02 em ano não bissexto')
+eq(data('29/02/2024'), '2024-02-29', '29/02 em ano BISSEXTO é válido')
+eq(data('31/12/2023'), '2023-12-31', 'último dia do ano é válido')
+
+// Data preenchida mas ilegível ≠ ausente: sem isso o guard trocaria um estouro no INSERT
+// por perda de dado silenciosa (coluna inteira em 'mar/23' virando NULL sem ninguém ver).
+const mapaData = { codigo: 0, nome: 1, dataBaseCusto: 2 }
+const ilegivel = montarLinha(['OB-1', 'Obra', 'mar/23'], mapaData)
+eq(ilegivel.dataBaseCusto, null, 'data ilegível vira null (não string inválida)')
+eq(ilegivel.datasIlegiveis, ['data-base'], 'data ilegível é registrada')
+const vIlegivel = validarLinha(ilegivel)
+ok(vIlegivel.ok === true, 'data ilegível é aviso, não erro (não bloqueia planilha que hoje passa)')
+ok(vIlegivel.avisos.some((a) => a.includes('formato não reconhecido')), 'data ilegível → aviso visível')
+// Célula VAZIA não gera o aviso — senão toda planilha sem data-base viraria ruído.
+eq(montarLinha(['OB-1', 'Obra', ''], mapaData).datasIlegiveis, [], 'célula vazia não é "ilegível"')
+eq(montarLinha(['OB-1', 'Obra', '06/2023'], mapaData).datasIlegiveis, [], 'data válida não é "ilegível"')
+
 // cabeçalho
 const headers = ['Código', 'Nome da Obra', 'Área (m²)', 'Custo Real', 'Custo Orçado', 'UF', 'Município', 'Início', 'Fim', 'Data-base', 'Elegível']
 const mapa = mapearCabecalho(headers)
